@@ -1,0 +1,46 @@
+{
+  "name": "@restorino/sdk",
+  "version": "1.0.0",
+  "description": "TypeScript SDK for Restorino Storefront, Vitrine and Customer Dashboard (Lovable.dev & React ready)",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "dist-bundle",
+    "README.md",
+    "LOVABLE_PROMPT.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "bundle:single": "node scripts/bundle-single.mjs",
+    "test": "node --test test/**/*.test.mjs",
+    "prepublishOnly": "npm run build && npm run bundle:single"
+  },
+  "keywords": [
+    "restorino",
+    "restaurant",
+    "saas",
+    "storefront",
+    "lovable",
+    "sdk",
+    "typescript"
+  ],
+  "author": "Restorino",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
