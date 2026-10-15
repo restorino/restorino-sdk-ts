@@ -21,6 +21,9 @@ export const api = new RestorinoClient({
   restaurantId: import.meta.env.VITE_RESTAURANT_ID,
   tenantId: import.meta.env.VITE_TENANT_ID,
   storageType: 'localStorage',
+  autoRefreshToken: true,      // Transparent token refresh on 401
+  retries: 2,                  // Automatic retry with exponential backoff on GET requests
+  retryDelayMs: 300,
   onTokenExpired: () => {
     // Redirection automatique vers la page de connexion si la session expire
     window.location.href = '/login?expired=true';
@@ -64,6 +67,10 @@ The SDK exposes:
   - `getCategorySeoMeta(categorySlug)`: Category SEO meta tags.
   - `getProductSeoMeta(productSlug)`: Product SEO meta tags.
   - `getTestimonialsBySubdomain(subdomain)`: Testimonials by vitrine subdomain.
+  - `getTestimonials(restaurantId)`: Verified testimonials by restaurant UUID.
+  - `validateApiKey()`: Validates storefront `X-API-Key` (permissions, active state).
+  - `getConfig()`: Retrieves full vitrine branding and sections configuration (`X-API-Key` required).
+  - `getSchemaOrg()`: Retrieves JSON-LD Schema.org rich-snippet bundle for SEO.
 - `api.orders`:
   - `placeOrder(orderPayload)`: Supports DELIVERY, TAKEAWAY, and DINE_IN.
   - `estimateDelivery(customerLocation)`: Calculates delivery fee and ETA.
@@ -78,11 +85,12 @@ The SDK exposes:
 - `api.delivery`:
   - `track(trackingNumber)`: Live tracking of courier with GPS, phone, and ETA.
 - `api.auth`:
-  - `login({ email, password })`: Authenticates customer and stores JWT.
+  - `login({ email, password })`: Authenticates customer and stores JWT & refresh token.
   - `loginWithGoogle({ googleToken })`: Google Sign-In authentication and auto-registration.
   - `register({ email, password, firstName, lastName, phone, referralCode })`: Account creation.
+  - `refreshToken()`: Refreshes access token explicitly (also handled automatically on 401).
   - `getMe()`: Current customer info & loyalty tier summary.
-  - `logout()`: Clears session.
+  - `logout()`: Clears session and revokes server tokens.
   - `changePassword({ currentPassword, newPassword })`: Update password.
   - `requestEmailVerification()`: Send verification email.
   - `verifyEmail(token)`: Verify email address.
@@ -116,26 +124,8 @@ The SDK exposes:
   - `uploadGoogleReviewProof(file)`: Upload review screenshot proof.
 - `api.tables`:
   - `getTableInfo(tableId)`: Table number, capacity, and active session from QR code.
-- `api.tv`:
-  - `getScreenData(screenCode)`: Kitchen display orders (preparing / ready) and banners.
-  - `ping(screenCode)`: Display heartbeat.
 - `api.liveAgent`:
-  - `connect({ restaurantSlug, onTranscript, onAudio, onClientAction, onStatusChange, onInterrupted })`: Interactive bidirectional voice/chat culinary assistant powered by Gemini Live. Supports voice ordering (`ADD_TO_CART` client actions) and dish recommendations directly on the storefront. categories (authenticated, scoped to customer's restaurant).
-  - `getMenuProducts(categoryId?)`: Menu products with optional category filter.
-  - `getMenuProduct(productId)`: Single product details.
-- `api.loyalty`:
-  - `getLoyaltyAccount()`: Available points, current tier (Bronze, Silver, Gold, Platinum), progress bar to next tier.
-  - `getRewards()`: Catalog of redeemable rewards (free dishes, discounts).
-  - `redeemReward(rewardId)`: Exchange points for instant coupon code.
-  - `getGoogleReviewInfo()`: Check review reward eligibility and points value.
-  - `getGoogleReviewStatus()`: Check existing review claim status.
-  - `submitGoogleReviewClaim(proofUrl)`: Claim bonus loyalty points for leaving a Google review.
-  - `uploadGoogleReviewProof(file)`: Upload screenshot proof of Google review.
-- `api.tables`:
-  - `getTableInfo(restaurantId, tableId)`: For QR code Dine-in ordering.
-- `api.tv`:
-  - `getScreenData(screenCode)`: Get dynamic display data for a restaurant TV/Kiosk screen.
-  - `ping(screenCode)`: Keepalive signal for active TV screens.
+  - `connect({ restaurantSlug, onTranscript, onAudio, onClientAction, onStatusChange, onInterrupted })`: Interactive bidirectional voice/chat culinary assistant powered by Gemini Live. Supports voice ordering (`ADD_TO_CART` client actions) and dish recommendations directly on the storefront.
 
 ---
 

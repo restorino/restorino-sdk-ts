@@ -116,7 +116,7 @@ export interface RestaurantStatusResponse {
 }
 
 /**
- * Métadonnées SEO et balises OpenGraph.
+ * Métadonnées SEO et balises OpenGraph pour le site vitrine.
  */
 export interface SeoMetaTagsResponse {
   title: string;
@@ -127,3 +127,80 @@ export interface SeoMetaTagsResponse {
   ogImage?: string;
   twitterCard?: string;
 }
+
+/**
+ * Réponse de validation d'une clé API Vitrine (POST /api/vitrine/api-keys/validate).
+ */
+export interface ValidateApiKeyResponse {
+  valid: boolean;
+  keyId?: string;
+  restaurantId?: string;
+  description?: string;
+  isActive?: boolean;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  permissions?: string[];
+  message?: string;
+}
+
+/**
+ * Modèle de template vitrine disponible.
+ */
+export interface TemplateResponse {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  imageUrl?: string;
+  color?: string;
+  features?: string[];
+  sampleData?: Map<string, any>;
+  isActive?: boolean;
+}
+
+/**
+ * Résultat de résolution de domaine personnalisé (GET /api/vitrine/resolve-domain).
+ */
+export interface DomainResolutionResponse {
+  found: boolean;
+  tenantId?: string;
+  restaurantName?: string;
+  subdomainName?: string;
+  customDomain?: string;
+  isPublished?: boolean;
+  domain?: string;
+  message?: string;
+}
+
+/**
+ * Configuration complète de la vitrine (GET /api/vitrine/{tenantId}/config ou /public).
+ */
+export interface VitrineConfigResponse {
+  id?: string;
+  tenantId?: string;
+  restaurantId?: string;
+  restaurantName?: string;
+  slogan?: string;
+  description?: string;
+  cuisineType?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  contactAddress?: string;
+  contactCity?: string;
+  contactPostalCode?: string;
+  contactLatitude?: number;
+  contactLongitude?: number;
+  brandingPrimaryColor?: string;
+  brandingSecondaryColor?: string;
+  brandingLogoUrl?: string;
+  brandingCoverImageUrl?: string;
+  brandingFaviconUrl?: string;
+  templateId?: string;
+  subdomainName?: string;
+  subdomainCustomDomain?: string;
+  settingsIsPublished?: boolean;
+  [key: string]: any;
+}
+
+
+

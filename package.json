@@ -12,22 +12,28 @@
       "require": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./bundle": "./dist-bundle/restorino-sdk.ts",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "dist-bundle",
     "README.md",
-    "LOVABLE_PROMPT.md"
+    "LOVABLE_PROMPT.md",
+    "LOVABLE_1SHOT_PROMPT.txt",
+    "prompt.txt",
+    ".env.example",
+    "vercel.json",
+    "netlify.toml"
   ],
   "engines": {
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run bundle:single",
     "bundle:single": "node scripts/bundle-single.mjs",
-    "test": "node --test test/**/*.test.mjs",
-    "prepublishOnly": "npm run build && npm run bundle:single"
+    "test": "npm run build && node --test test/**/*.test.mjs",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "restorino",

@@ -71,3 +71,29 @@ export interface LiveAgentClientAction {
   action: 'ADD_TO_CART' | 'NAVIGATE' | 'SELECT_ITEM' | string;
   payload: Record<string, any>;
 }
+
+/**
+ * Noms d'événements supportés par la session de l'agent vocal en temps réel.
+ */
+export type LiveAgentEvent =
+  | 'transcript'
+  | 'audio'
+  | 'action'
+  | 'status'
+  | 'interrupted'
+  | 'error'
+  | 'close';
+
+/**
+ * Signature des écouteurs selon le type d'événement.
+ */
+export type LiveAgentEventListener<E extends LiveAgentEvent> =
+  E extends 'transcript' ? (role: 'user' | 'assistant', text: string) => void :
+  E extends 'audio' ? (audioChunk: Uint8Array) => void :
+  E extends 'action' ? (action: LiveAgentClientAction) => void :
+  E extends 'status' ? (status: LiveAgentStatus) => void :
+  E extends 'interrupted' ? () => void :
+  E extends 'error' ? (error: Error) => void :
+  E extends 'close' ? () => void :
+  never;
+

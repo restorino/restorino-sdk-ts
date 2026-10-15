@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RestorinoClient, RestorinoApiError, HttpClient } from '../dist/index.js';
+import {
+  RestorinoClient,
+  RestorinoApiError,
+  HttpClient,
+  formatCurrency,
+  formatDate,
+  calculateCart,
+  checkAllergensConflict
+} from '../dist/index.js';
 
 test('RestorinoClient: initializes with all 8 modules and HTTP client', () => {
   const client = new RestorinoClient({
@@ -19,7 +27,7 @@ test('RestorinoClient: initializes with all 8 modules and HTTP client', () => {
   assert.ok(client.orders);
   assert.ok(client.delivery);
   assert.ok(client.tables);
-  assert.ok(client.tv);
+  assert.ok(client.liveAgent);
   assert.equal(client.http.getConfig().baseUrl, 'https://api.restorino.com');
   assert.equal(client.http.getConfig().restaurantId, 'rest-uuid-123');
   assert.equal(client.http.getConfig().tenantId, 'tenant-uuid-456');
@@ -550,3 +558,665 @@ test('LiveAgentModule: connect resolves secure wss/ws URL and scopes restaurantS
     globalThis.WebSocket = originalWebSocket;
   }
 });
+
+test('HttpClient: manages refresh token storage, getters, and clearTokens', () => {
+  const http = new HttpClient({
+    baseUrl: 'https://api.restorino.com',
+    storageType: 'memory'
+  });
+
+  assert.equal(http.getToken(), null);
+  assert.equal(http.getRefreshToken(), null);
+
+  http.setAuthTokens('access-token-1', 'refresh-token-1');
+  assert.equal(http.getToken(), 'access-token-1');
+  assert.equal(http.getRefreshToken(), 'refresh-token-1');
+
+  http.setRefreshToken('refresh-token-2');
+  assert.equal(http.getRefreshToken(), 'refresh-token-2');
+
+  http.clearTokens();
+  assert.equal(http.getToken(), null);
+  assert.equal(http.getRefreshToken(), null);
+});
+
+test('HttpClient: performs automatic retry on transient 503 error and succeeds', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+
+  globalThis.fetch = async (url) => {
+    attempts++;
+    if (attempts === 1) {
+      return {
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ error: 'SERVICE_UNAVAILABLE', message: 'Backend warming up' })
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ success: true, attempt: attempts })
+    };
+  };
+
+  try {
+    const http = new HttpClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory',
+      retries: 2,
+      retryDelayMs: 10
+    });
+
+    const res = await http.request('/api/public/restaurants/test', { method: 'GET' });
+    assert.equal(attempts, 2);
+    assert.equal(res.success, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('HttpClient: transparently auto-refreshes token on 401 and replays request', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = [];
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, headers: options.headers });
+
+    // 1st call: request to protected endpoint fails with 401
+    if (url.includes('/api/customers/me')) {
+      if (options.headers?.Authorization === 'Bearer expired-token') {
+        return {
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({ error: 'UNAUTHORIZED', message: 'Token expired' })
+        };
+      }
+      // Replayed call with new token succeeds
+      if (options.headers?.Authorization === 'Bearer fresh-access-token') {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({ id: 'cust-123', email: 'test@example.com' })
+        };
+      }
+    }
+
+    // Refresh endpoint
+    if (url.includes('/api/auth/refresh')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ token: 'fresh-access-token', refreshToken: 'fresh-refresh-token' })
+      };
+    }
+
+    return {
+      ok: false,
+      status: 404,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({})
+    };
+  };
+
+  try {
+    const http = new HttpClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory',
+      autoRefreshToken: true
+    });
+
+    http.setAuthTokens('expired-token', 'valid-refresh-token');
+
+    const result = await http.request('/api/customers/me', {
+      method: 'GET',
+      requiresAuth: true
+    });
+
+    assert.equal(result.id, 'cust-123');
+    assert.equal(http.getToken(), 'fresh-access-token');
+    assert.equal(http.getRefreshToken(), 'fresh-refresh-token');
+    assert.equal(calls.length, 3); // /me (401) -> /refresh (200) -> /me (200)
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('LiveAgentSession: supports EventEmitter .on(), .off(), and unsubscribe callback', () => {
+  const originalWebSocket = globalThis.WebSocket;
+  let mockWsInstance = null;
+
+  class MockWebSocket {
+    constructor(url) {
+      this.readyState = 1;
+      mockWsInstance = this;
+    }
+    send() {}
+    close() {}
+  }
+  globalThis.WebSocket = MockWebSocket;
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      restaurantId: 'test-rest',
+      storageType: 'memory'
+    });
+
+    const session = client.liveAgent.connect({
+      restaurantSlug: 'test-rest'
+    });
+
+    let transcriptCount = 0;
+    let lastText = '';
+    const unsubscribe = session.on('transcript', (role, text) => {
+      transcriptCount++;
+      lastText = text;
+    });
+
+    // Simulate incoming transcript message
+    mockWsInstance.onmessage({
+      data: JSON.stringify({ type: 'TRANSCRIPT', role: 'assistant', text: 'Bienvenue chez Restorino !' })
+    });
+
+    assert.equal(transcriptCount, 1);
+    assert.equal(lastText, 'Bienvenue chez Restorino !');
+
+    // Test unsubscribe
+    unsubscribe();
+
+    mockWsInstance.onmessage({
+      data: JSON.stringify({ type: 'TRANSCRIPT', role: 'assistant', text: 'Second message' })
+    });
+
+    assert.equal(transcriptCount, 1); // Unsubscribed, must not increment
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+test('AuthModule: refreshToken invokes /api/auth/refresh and updates tokens', async () => {
+  const originalFetch = globalThis.fetch;
+  let refreshBody = null;
+
+  globalThis.fetch = async (url, options) => {
+    refreshBody = JSON.parse(options.body);
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        token: 'new-token-abc',
+        refreshToken: 'new-refresh-xyz',
+        expiresIn: 3600
+      })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory'
+    });
+
+    client.setAuthTokens('old-token', 'my-refresh-token');
+
+    const res = await client.auth.refreshToken();
+    assert.equal(res.token, 'new-token-abc');
+    assert.equal(res.refreshToken, 'new-refresh-xyz');
+    assert.equal(client.getToken(), 'new-token-abc');
+    assert.equal(client.getRefreshToken(), 'new-refresh-xyz');
+    assert.equal(refreshBody.refreshToken, 'my-refresh-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('VitrineModule: getTestimonials routes to /api/public/testimonials/{id}', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+
+  globalThis.fetch = async (url) => {
+    requestedUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ([
+        { id: 'test-1', customerName: 'Alice', rating: 5, comment: 'Plats délicieux !' }
+      ])
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      restaurantId: 'rest-uuid-123',
+      storageType: 'memory'
+    });
+
+    const reviews = await client.vitrine.getTestimonials();
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].customerName, 'Alice');
+    assert.ok(requestedUrl.includes('/api/public/testimonials/rest-uuid-123'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('VitrineModule: validateApiKey sends X-API-Key to /api/vitrine/api-keys/validate', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedHeaders = null;
+  let interceptedUrl = '';
+
+  globalThis.fetch = async (url, options) => {
+    interceptedUrl = url;
+    interceptedHeaders = options.headers;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        valid: true,
+        keyId: 'key-123',
+        restaurantId: 'rest-456',
+        permissions: ['READ', 'WRITE']
+      })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      apiKey: 'vit_live_testkey123',
+      allowApiKeyHeader: true,
+      storageType: 'memory'
+    });
+
+    const res = await client.vitrine.validateApiKey();
+    assert.equal(res.valid, true);
+    assert.equal(res.keyId, 'key-123');
+    assert.equal(interceptedHeaders['X-API-Key'], 'vit_live_testkey123');
+    assert.ok(interceptedUrl.includes('/api/vitrine/api-keys/validate'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('HttpClient: does not send configured API keys without explicit server-only opt-in', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedHeaders = null;
+
+  globalThis.fetch = async (_url, options) => {
+    interceptedHeaders = options.headers;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ ok: true })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      apiKey: 'vit_live_browser_secret',
+      storageType: 'memory'
+    });
+
+    await client.http.request('/api/public/restaurants/search', { method: 'GET' });
+    assert.equal(interceptedHeaders['X-API-Key'], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('VitrineModule: getConfig routes to /api/vitrine/{tenantId}/config with X-API-Key', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedUrl = '';
+  let interceptedHeaders = null;
+
+  globalThis.fetch = async (url, options) => {
+    interceptedUrl = url;
+    interceptedHeaders = options.headers;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        tenantId: 'tenant-123',
+        restaurantName: 'Bella Vita',
+        brandingPrimaryColor: '#ff5500',
+        settingsIsPublished: true
+      })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      tenantId: 'tenant-123',
+      apiKey: 'vit_live_secretkey',
+      allowApiKeyHeader: true,
+      storageType: 'memory'
+    });
+
+    const config = await client.vitrine.getConfig();
+    assert.equal(config.restaurantName, 'Bella Vita');
+    assert.equal(config.brandingPrimaryColor, '#ff5500');
+    assert.equal(interceptedHeaders['X-API-Key'], 'vit_live_secretkey');
+    assert.ok(interceptedUrl.includes('/api/vitrine/tenant-123/config'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('VitrineModule: getPublicConfig routes to /api/vitrine/{tenant}/public without requiring auth', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedUrl = '';
+
+  globalThis.fetch = async (url) => {
+    interceptedUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        tenantId: 'tenant-123',
+        restaurantName: 'Bella Vita',
+        settingsIsPublished: true
+      })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      tenantId: 'tenant-123',
+      storageType: 'memory'
+    });
+
+    const res = await client.vitrine.getPublicConfig();
+    assert.equal(res.restaurantName, 'Bella Vita');
+    assert.ok(interceptedUrl.includes('/api/vitrine/tenant-123/public'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('VitrineModule: resolveCustomDomain routes to /api/vitrine/resolve-domain', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedUrl = '';
+
+  globalThis.fetch = async (url) => {
+    interceptedUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        found: true,
+        tenantId: 'tenant-abc',
+        restaurantName: 'Chez Luigi'
+      })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory'
+    });
+
+    const res = await client.vitrine.resolveCustomDomain('chez-luigi.com');
+    assert.equal(res.found, true);
+    assert.equal(res.restaurantName, 'Chez Luigi');
+    assert.ok(interceptedUrl.includes('/api/vitrine/resolve-domain?domain=chez-luigi.com'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('RestorinoClient: manages apiKey dynamically with getApiKey and setApiKey', () => {
+  const client = new RestorinoClient({
+    baseUrl: 'https://api.restorino.com',
+    apiKey: 'vit_live_initial',
+    storageType: 'memory'
+  });
+
+  assert.equal(client.getApiKey(), 'vit_live_initial');
+  client.setApiKey('vit_live_updated');
+  assert.equal(client.getApiKey(), 'vit_live_updated');
+  client.setApiKey(null);
+  assert.equal(client.getApiKey(), null);
+});
+
+test('Security: Header sanitization blocks Unicode line separators (\\u2028, \\u2029)', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedRequest = null;
+
+  globalThis.fetch = async (url, options) => {
+    interceptedRequest = { url, options };
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({})
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      tenantId: 'tenant-123\u2028Injected: bad',
+      apiKey: 'key-abc\u2029Other: evil',
+      allowApiKeyHeader: true,
+      storageType: 'memory'
+    });
+
+    await client.vitrine.getPopular();
+
+    assert.equal(interceptedRequest.options.headers['x-tenant-id'], 'tenant-123Injected: bad');
+    assert.equal(interceptedRequest.options.headers['X-API-Key'], 'key-abcOther: evil');
+    assert.equal(interceptedRequest.options.headers['Injected'], undefined);
+    assert.equal(interceptedRequest.options.headers['Other'], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Security: buildUrl cleans backslashes and prevents SSRF absolute URL overrides', async () => {
+  const originalFetch = globalThis.fetch;
+  let interceptedUrls = [];
+
+  globalThis.fetch = async (url) => {
+    interceptedUrls.push(url);
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({})
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory'
+    });
+
+    // Backslash path that could resolve as protocol-relative
+    await client.http.request('\\\\attacker.com\\phish');
+    assert.equal(interceptedUrls[0], 'https://api.restorino.com/attacker.com/phish');
+
+    // Absolute URL passed into endpoint must not override baseUrl
+    await client.http.request('https://evil.com/leak/data');
+    assert.equal(interceptedUrls[1], 'https://api.restorino.com/leak/data');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Security: buildUrl and updateConfig ignore __proto__ and prototype pollution', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = '';
+
+  globalThis.fetch = async (url) => {
+    capturedUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({})
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory'
+    });
+
+    // Parameter pollution payload with __proto__
+    const payload = JSON.parse('{"valid":"123","__proto__":{"polluted":true}}');
+    await client.http.request('/api/test', { params: payload });
+
+    assert.ok(capturedUrl.includes('valid=123'));
+    assert.ok(!capturedUrl.includes('polluted'));
+
+    // Config update with __proto__
+    const pollutedConfig = JSON.parse('{"restaurantId":"safe-resto","__proto__":{"admin":true}}');
+    client.configure(pollutedConfig);
+    assert.equal(client.http.getConfig().restaurantId, 'safe-resto');
+    assert.equal(({})['admin'], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Security: LiveAgentModule rejects non-ws/wss protocols (e.g. javascript:)', () => {
+  const client = new RestorinoClient({
+    baseUrl: 'https://api.restorino.com',
+    storageType: 'memory'
+  });
+
+  assert.throws(() => {
+    client.liveAgent.connect({
+      restaurantSlug: 'safe-rest',
+      wsUrl: 'javascript:alert(1)'
+    });
+  }, /ws:\/\/|wss:\/\//);
+});
+
+test('Security: loadStoredValue rejects poisoned tokens containing CRLF or control chars', () => {
+  const store = {};
+  const mockLocalStorage = {
+    getItem: (key) => store[key] || null,
+    setItem: (key, val) => { store[key] = String(val); },
+    removeItem: (key) => { delete store[key]; }
+  };
+  globalThis.window = {};
+  globalThis.localStorage = mockLocalStorage;
+
+  try {
+    // Poison storage with a token containing CRLF injection
+    mockLocalStorage.setItem('restorino_customer_token', 'jwt-token\r\nInjected-Header: evil');
+
+    const http = new HttpClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'localStorage'
+    });
+
+    // Must be rejected and treated as null
+    assert.equal(http.getToken(), null);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.localStorage;
+  }
+});
+
+test('Utils: formatCurrency formats EUR and other currencies properly', () => {
+  const formatted = formatCurrency(18.5, 'EUR', 'fr-FR');
+  assert.ok(formatted.includes('18,50') || formatted.includes('18.50'));
+  assert.ok(formatted.includes('€') || formatted.includes('EUR'));
+});
+
+test('Utils: calculateCart computes subtotal, discount, delivery fee and item count', () => {
+  const items = [
+    { productId: 'p1', productName: 'Pizza', quantity: 2, unitPrice: 12.0 },
+    { productId: 'p2', productName: 'Soda', quantity: 1, unitPrice: 3.5 }
+  ];
+
+  const res = calculateCart(items, { deliveryFee: 2.5, discountPercent: 10 });
+  assert.equal(res.subtotal, 27.5);
+  assert.equal(res.deliveryFee, 2.5);
+  assert.equal(res.discount, 2.75);
+  assert.equal(res.total, 27.25);
+  assert.equal(res.itemCount, 3);
+});
+
+test('Utils: checkAllergensConflict detects conflicting allergens', () => {
+  const dishAllergens = ['Gluten', 'Lactose', 'Arachides'];
+  const customerAllergies = ['lactose', 'soja'];
+
+  const result = checkAllergensConflict(dishAllergens, customerAllergies);
+  assert.equal(result.hasConflict, true);
+  assert.equal(result.conflictingAllergens.length, 1);
+  assert.equal(result.conflictingAllergens[0], 'Lactose');
+});
+
+test('OrdersModule: watchOrder polls tracking and stops automatically upon DELIVERED', async () => {
+  const originalFetch = globalThis.fetch;
+  let pollCalls = 0;
+
+  globalThis.fetch = async () => {
+    pollCalls++;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        orderId: 'ord-1',
+        status: pollCalls >= 2 ? 'DELIVERED' : 'PREPARING',
+        isDelivered: pollCalls >= 2
+      })
+    };
+  };
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory'
+    });
+
+    let receivedCount = 0;
+    let finalStatus = '';
+
+    const stopWatching = client.orders.watchOrder(
+      'ord-1',
+      { customerEmail: 'test@example.com', customerPhone: '0600000000' },
+      (tracking) => {
+        receivedCount++;
+        finalStatus = tracking.status;
+      },
+      { intervalMs: 50 }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    stopWatching();
+
+    assert.ok(receivedCount >= 2);
+    assert.equal(finalStatus, 'DELIVERED');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+

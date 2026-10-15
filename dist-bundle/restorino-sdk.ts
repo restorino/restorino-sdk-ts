@@ -37,6 +37,12 @@ export interface RestorinoClientConfig {
   apiKey?: string;
 
   /**
+   * Explicit server-only opt-in for sending `X-API-Key`.
+   * Browser clients never send API keys, even when `apiKey` is provided.
+   */
+  allowApiKeyHeader?: boolean;
+
+  /**
    * Mécanisme de stockage du token JWT client ('localStorage', 'sessionStorage', ou 'memory').
    * Défaut: 'localStorage' si disponible dans l'environnement navigateur.
    */
@@ -49,6 +55,23 @@ export interface RestorinoClientConfig {
   tokenStorageKey?: string;
 
   /**
+   * Clé de stockage personnalisée pour le refresh token.
+   * Défaut: 'restorino_customer_refresh_token'.
+   */
+  refreshTokenStorageKey?: string;
+
+  /**
+   * Tentative automatique de rafraîchissement du token lors d'une erreur 401 si un refresh token existe.
+   * Défaut: true.
+   */
+  autoRefreshToken?: boolean;
+
+  /**
+   * Callback déclenché si le renouvellement du refresh token échoue.
+   */
+  onRefreshTokenFailed?: () => void;
+
+  /**
    * Fonction hook déclenchée lorsqu'une requête échoue avec un code HTTP 401 (Session expirée).
    */
   onTokenExpired?: () => void;
@@ -58,6 +81,25 @@ export interface RestorinoClientConfig {
    * Mettre à 0 pour désactiver le timeout.
    */
   timeoutMs?: number;
+
+  /**
+   * Nombre de tentatives de réessai automatique (retry) sur les requêtes idempotentes (GET)
+   * ou en cas d'erreur réseau / serveur transitoire (502, 503, 504, 429).
+   * Défaut: 0 (désactivé).
+   */
+  retries?: number;
+
+  /**
+   * Délai initial de réessai en millisecondes avec backoff exponentiel.
+   * Défaut: 300ms.
+   */
+  retryDelayMs?: number;
+
+  /**
+   * Mode d'envoi des cookies/identifiants pour fetch ('omit', 'same-origin', ou 'include').
+   * Défaut: 'omit'.
+   */
+  credentials?: RequestCredentials;
 
   /**
    * Headers HTTP additionnels envoyés avec chaque requête.
@@ -168,6 +210,24 @@ export interface CustomerAuthResponse {
   refreshToken?: string;
   customer: CustomerDto;
   loyalty?: CustomerLoyaltySummary;
+}
+
+/**
+ * Requête de rafraîchissement de token.
+ */
+export interface CustomerRefreshTokenRequest {
+  refreshToken?: string;
+  restaurantId?: string;
+}
+
+/**
+ * Réponse de rafraîchissement de token.
+ */
+export interface CustomerRefreshTokenResponse {
+  token: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  success?: boolean;
 }
 
 /**
@@ -545,7 +605,7 @@ export interface RestaurantStatusResponse {
 }
 
 /**
- * Métadonnées SEO et balises OpenGraph.
+ * Métadonnées SEO et balises OpenGraph pour le site vitrine.
  */
 export interface SeoMetaTagsResponse {
   title: string;
@@ -555,6 +615,80 @@ export interface SeoMetaTagsResponse {
   ogDescription: string;
   ogImage?: string;
   twitterCard?: string;
+}
+
+/**
+ * Réponse de validation d'une clé API Vitrine (POST /api/vitrine/api-keys/validate).
+ */
+export interface ValidateApiKeyResponse {
+  valid: boolean;
+  keyId?: string;
+  restaurantId?: string;
+  description?: string;
+  isActive?: boolean;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  permissions?: string[];
+  message?: string;
+}
+
+/**
+ * Modèle de template vitrine disponible.
+ */
+export interface TemplateResponse {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  imageUrl?: string;
+  color?: string;
+  features?: string[];
+  sampleData?: Map<string, any>;
+  isActive?: boolean;
+}
+
+/**
+ * Résultat de résolution de domaine personnalisé (GET /api/vitrine/resolve-domain).
+ */
+export interface DomainResolutionResponse {
+  found: boolean;
+  tenantId?: string;
+  restaurantName?: string;
+  subdomainName?: string;
+  customDomain?: string;
+  isPublished?: boolean;
+  domain?: string;
+  message?: string;
+}
+
+/**
+ * Configuration complète de la vitrine (GET /api/vitrine/{tenantId}/config ou /public).
+ */
+export interface VitrineConfigResponse {
+  id?: string;
+  tenantId?: string;
+  restaurantId?: string;
+  restaurantName?: string;
+  slogan?: string;
+  description?: string;
+  cuisineType?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  contactAddress?: string;
+  contactCity?: string;
+  contactPostalCode?: string;
+  contactLatitude?: number;
+  contactLongitude?: number;
+  brandingPrimaryColor?: string;
+  brandingSecondaryColor?: string;
+  brandingLogoUrl?: string;
+  brandingCoverImageUrl?: string;
+  brandingFaviconUrl?: string;
+  templateId?: string;
+  subdomainName?: string;
+  subdomainCustomDomain?: string;
+  settingsIsPublished?: boolean;
+  [key: string]: any;
 }
 
 // ==========================================
@@ -799,23 +933,6 @@ export interface PublicTableResponse {
   restaurantName: string;
 }
 
-/**
- * Données d'affichage dynamique pour écran TV / Kiosk restaurant.
- */
-export interface TvPublicScreenDataResponse {
-  screenCode: string;
-  restaurantName: string;
-  preparingOrders: string[];
-  readyOrders: string[];
-  promotions?: {
-    id: string;
-    title: string;
-    description: string;
-    imageUrl?: string;
-  }[];
-  updatedAt: string;
-}
-
 // ==========================================
 // SOURCE: types/live-agent.ts
 // ==========================================
@@ -894,6 +1011,31 @@ export interface LiveAgentClientAction {
   payload: Record<string, any>;
 }
 
+/**
+ * Noms d'événements supportés par la session de l'agent vocal en temps réel.
+ */
+export type LiveAgentEvent =
+  | 'transcript'
+  | 'audio'
+  | 'action'
+  | 'status'
+  | 'interrupted'
+  | 'error'
+  | 'close';
+
+/**
+ * Signature des écouteurs selon le type d'événement.
+ */
+export type LiveAgentEventListener<E extends LiveAgentEvent> =
+  E extends 'transcript' ? (role: 'user' | 'assistant', text: string) => void :
+  E extends 'audio' ? (audioChunk: Uint8Array) => void :
+  E extends 'action' ? (action: LiveAgentClientAction) => void :
+  E extends 'status' ? (status: LiveAgentStatus) => void :
+  E extends 'interrupted' ? () => void :
+  E extends 'error' ? (error: Error) => void :
+  E extends 'close' ? () => void :
+  never;
+
 // ==========================================
 // SOURCE: http/http-client.ts
 // ==========================================
@@ -921,13 +1063,16 @@ export class RestorinoApiError extends Error {
  * Options configurables par requête HTTP.
  */
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
   body?: any;
   params?: Record<string, any>;
   headers?: Record<string, string>;
   requiresAuth?: boolean;
   isFormData?: boolean;
   timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
+  skipAuthRefresh?: boolean;
   signal?: AbortSignal;
 }
 
@@ -937,12 +1082,17 @@ export interface RequestOptions {
 export class HttpClient {
   private config: RestorinoClientConfig;
   private token: string | null = null;
+  private refreshToken: string | null = null;
   private tokenStorageKey: string;
+  private refreshTokenStorageKey: string;
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor(config: RestorinoClientConfig) {
     this.config = config;
     this.tokenStorageKey = config.tokenStorageKey || 'restorino_customer_token';
+    this.refreshTokenStorageKey = config.refreshTokenStorageKey || 'restorino_customer_refresh_token';
     this.token = this.loadToken();
+    this.refreshToken = this.loadRefreshToken();
   }
 
   /**
@@ -953,22 +1103,49 @@ export class HttpClient {
   }
 
   /**
+   * Récupère le refresh token en mémoire ou dans le stockage.
+   */
+  public getRefreshToken(): string | null {
+    return this.refreshToken;
+  }
+
+  /**
+   * Récupère la clé API configurée.
+   */
+  public getApiKey(): string | null {
+    return this.config.apiKey || null;
+  }
+
+  /**
+   * Définit dynamiquement la clé API Vitrine.
+   */
+  public setApiKey(apiKey: string | null): void {
+    this.config.apiKey = apiKey || undefined;
+  }
+
+  /**
    * Enregistre un nouveau token JWT client.
    */
   public setToken(token: string | null): void {
     this.token = token;
-    if (typeof window === 'undefined') return;
+    this.persistValue(this.tokenStorageKey, token);
+  }
 
-    try {
-      if (this.config.storageType === 'sessionStorage') {
-        if (token) sessionStorage.setItem(this.tokenStorageKey, token);
-        else sessionStorage.removeItem(this.tokenStorageKey);
-      } else if (this.config.storageType !== 'memory') {
-        if (token) localStorage.setItem(this.tokenStorageKey, token);
-        else localStorage.removeItem(this.tokenStorageKey);
-      }
-    } catch {
-      // Ignorer si localStorage/sessionStorage est bloqué
+  /**
+   * Enregistre un nouveau refresh token client.
+   */
+  public setRefreshToken(refreshToken: string | null): void {
+    this.refreshToken = refreshToken;
+    this.persistValue(this.refreshTokenStorageKey, refreshToken);
+  }
+
+  /**
+   * Enregistre simultanément le token d'accès et le refresh token.
+   */
+  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+    this.setToken(token);
+    if (refreshToken !== undefined) {
+      this.setRefreshToken(refreshToken);
     }
   }
 
@@ -980,10 +1157,24 @@ export class HttpClient {
   }
 
   /**
+   * Supprime l'ensemble des tokens (accès et rafraîchissement).
+   */
+  public clearTokens(): void {
+    this.setToken(null);
+    this.setRefreshToken(null);
+  }
+
+  /**
    * Met à jour dynamiquement la configuration du client (ex: changement de restaurantId).
    */
   public updateConfig(newConfig: Partial<RestorinoClientConfig>): void {
-    this.config = { ...this.config, ...newConfig };
+    if (!newConfig || typeof newConfig !== 'object') return;
+    const safeConfig: Partial<RestorinoClientConfig> = {};
+    for (const [key, value] of Object.entries(newConfig)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      (safeConfig as any)[key] = value;
+    }
+    this.config = { ...this.config, ...safeConfig };
   }
 
   /**
@@ -993,18 +1184,39 @@ export class HttpClient {
     return this.config;
   }
 
-  private loadToken(): string | null {
+  private persistValue(key: string, value: string | null): void {
+    if (typeof window === 'undefined') return;
+    try {
+      if (this.config.storageType === 'sessionStorage') {
+        if (value) sessionStorage.setItem(key, value);
+        else sessionStorage.removeItem(key);
+      } else if (this.config.storageType !== 'memory') {
+        if (value) localStorage.setItem(key, value);
+        else localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignorer si stockage inaccessible
+    }
+  }
+
+  private loadStoredValue(key: string): string | null {
     if (typeof window === 'undefined') return null;
     try {
       let raw: string | null = null;
       if (this.config.storageType === 'sessionStorage') {
-        raw = sessionStorage.getItem(this.tokenStorageKey);
+        raw = sessionStorage.getItem(key);
       } else if (this.config.storageType !== 'memory') {
-        raw = localStorage.getItem(this.tokenStorageKey);
+        raw = localStorage.getItem(key);
       }
       if (raw && typeof raw === 'string') {
         const trimmed = raw.trim();
-        if (trimmed !== '' && trimmed !== 'null' && trimmed !== 'undefined') {
+        // Prévention contre les tokens empoisonnés contenant CRLF, caractères de contrôle ou séparateurs Unicode
+        if (
+          trimmed !== '' &&
+          trimmed !== 'null' &&
+          trimmed !== 'undefined' &&
+          !/[\r\n\x00-\x1F\x7F\u2028\u2029]/.test(trimmed)
+        ) {
           return trimmed;
         }
       }
@@ -1014,17 +1226,139 @@ export class HttpClient {
     }
   }
 
-  /**
-   * Nettoie les valeurs d'en-tête contre l'injection CRLF et caractères de contrôle.
-   */
-  private sanitizeHeaderValue(val: string): string {
-    return val.replace(/[\r\n\x00-\x1F\x7F]/g, '').trim();
+  private loadToken(): string | null {
+    return this.loadStoredValue(this.tokenStorageKey);
+  }
+
+  private loadRefreshToken(): string | null {
+    return this.loadStoredValue(this.refreshTokenStorageKey);
   }
 
   /**
-   * Effectue un appel HTTP générique avec gestion du timeout et annulation (AbortController).
+   * Tente de rafraîchir le token JWT via l'endpoint de refresh du backend.
+   * Utilise une promesse partagée pour mutualiser les requêtes concurrentes.
+   */
+  public async tryRefreshToken(): Promise<boolean> {
+    const currentRefreshToken = this.refreshToken;
+    if (!currentRefreshToken) {
+      return false;
+    }
+
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        const refreshResponse = await this.executeSingleRequest<{
+          token?: string;
+          refreshToken?: string;
+          success?: boolean;
+        }>('/api/auth/refresh', {
+          method: 'POST',
+          body: { refreshToken: currentRefreshToken },
+          headers: {
+            'x-refresh-token': this.sanitizeHeaderValue(currentRefreshToken)
+          },
+          skipAuthRefresh: true,
+          retries: 0
+        });
+
+        if (refreshResponse && refreshResponse.token) {
+          this.setToken(refreshResponse.token);
+          if (refreshResponse.refreshToken) {
+            this.setRefreshToken(refreshResponse.refreshToken);
+          }
+          return true;
+        } else if (refreshResponse && refreshResponse.success) {
+          return true;
+        }
+        return false;
+      } catch {
+        if (this.config.onRefreshTokenFailed) {
+          this.config.onRefreshTokenFailed();
+        }
+        return false;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  /**
+   * Nettoie les valeurs d'en-tête contre l'injection CRLF, injection de sauts de ligne Unicode et caractères de contrôle.
+   */
+  private sanitizeHeaderValue(val: unknown): string {
+    if (val === null || val === undefined) return '';
+    return String(val).replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '').trim();
+  }
+
+  /**
+   * Effectue un appel HTTP avec gestion de retry exponentiel et annulation.
    */
   public async request<T>(
+    endpoint: string,
+    options: RequestOptions = {}
+  ): Promise<T> {
+    const method = options.method || 'GET';
+    const isIdempotent = method === 'GET' || method === 'HEAD';
+    const maxRetries = options.retries !== undefined
+      ? options.retries
+      : (isIdempotent ? (this.config.retries ?? 0) : 0);
+    const baseRetryDelay = options.retryDelayMs !== undefined
+      ? options.retryDelayMs
+      : (this.config.retryDelayMs ?? 300);
+
+    let lastError: any = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (options.signal?.aborted) {
+        throw new RestorinoApiError(0, 'Requête annulée.', 'REQUEST_ABORTED');
+      }
+
+      if (attempt > 0) {
+        // Backoff exponentiel avec jitter
+        const delay = Math.min(baseRetryDelay * Math.pow(2, attempt - 1) + Math.random() * 50, 10000);
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, delay);
+          if (options.signal) {
+            options.signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(new RestorinoApiError(0, 'Requête annulée pendant le réessai.', 'REQUEST_ABORTED'));
+            }, { once: true });
+          }
+        });
+      }
+
+      try {
+        return await this.executeSingleRequest<T>(endpoint, options);
+      } catch (err: any) {
+        lastError = err;
+
+        if (options.signal?.aborted || err?.error === 'REQUEST_ABORTED') {
+          throw err;
+        }
+
+        // Déterminer si l'erreur est transitoire (éligible au retry)
+        const isTransient =
+          err instanceof RestorinoApiError &&
+          (err.status === 0 || err.status === 408 || err.status === 429 || err.status === 502 || err.status === 503 || err.status === 504);
+
+        if (!isTransient || attempt >= maxRetries) {
+          throw err;
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  /**
+   * Effectue une exécution unitaire de requête HTTP.
+   */
+  private async executeSingleRequest<T>(
     endpoint: string,
     options: RequestOptions = {}
   ): Promise<T> {
@@ -1036,6 +1370,7 @@ export class HttpClient {
       requiresAuth = false,
       isFormData = false,
       timeoutMs,
+      skipAuthRefresh = false,
       signal: callerSignal
     } = options;
 
@@ -1079,8 +1414,8 @@ export class HttpClient {
       headers['x-restaurant-id'] = this.sanitizeHeaderValue(this.config.restaurantId);
     }
 
-    if (this.config.apiKey) {
-      headers['x-api-key'] = this.sanitizeHeaderValue(this.config.apiKey);
+    if (this.config.apiKey && this.config.allowApiKeyHeader === true) {
+      headers['X-API-Key'] = this.sanitizeHeaderValue(this.config.apiKey);
     }
 
     if (this.token) {
@@ -1094,7 +1429,7 @@ export class HttpClient {
       method,
       headers,
       body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
-      credentials: 'omit',
+      credentials: this.config.credentials || 'omit',
       signal: controller.signal
     };
 
@@ -1113,7 +1448,19 @@ export class HttpClient {
     }
 
     if (response.status === 401) {
-      this.clearToken();
+      const autoRefreshEnabled = this.config.autoRefreshToken !== false;
+      if (autoRefreshEnabled && !skipAuthRefresh && this.refreshToken) {
+        const refreshed = await this.tryRefreshToken();
+        if (refreshed) {
+          // Rejouer la requête protégée avec le nouveau token
+          return this.executeSingleRequest<T>(endpoint, {
+            ...options,
+            skipAuthRefresh: true
+          });
+        }
+      }
+
+      this.clearTokens();
       if (this.config.onTokenExpired) {
         this.config.onTokenExpired();
       }
@@ -1138,22 +1485,34 @@ export class HttpClient {
 
   private buildUrl(endpoint: string, params?: Record<string, any>): string {
     const base = this.config.baseUrl.replace(/\/+$/, '');
-    let cleanEndpoint = endpoint.trim();
+    let cleanEndpoint = (typeof endpoint === 'string' ? endpoint : '').trim();
+
+    // Nettoyer les backslashes (\) et caractères de contrôle pour prévenir les contournements de protocole (SSRF / Open Redirect)
+    cleanEndpoint = cleanEndpoint.replace(/\\/g, '/');
+    cleanEndpoint = cleanEndpoint.replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '');
+
+    // Supprimer le schéma & l'autorité si un endpoint absolu est accidentellement injecté
+    cleanEndpoint = cleanEndpoint.replace(/^https?:\/\/[^\/]+/i, '');
+
     if (!cleanEndpoint.startsWith('/')) {
       cleanEndpoint = '/' + cleanEndpoint;
     }
-    // Prevent protocol-relative redirects (e.g. "//evil.com")
+    // Empêcher les URL protocol-relative (ex: "//evil.com")
     cleanEndpoint = cleanEndpoint.replace(/^\/+/, '/');
 
     let fullUrl = `${base}${cleanEndpoint}`;
 
-    if (params) {
+    if (params && typeof params === 'object') {
       const searchParams = new URLSearchParams();
-      Object.entries(params).forEach(([key, value]) => {
+      for (const [key, value] of Object.entries(params)) {
+        // Protection contre la pollution de prototype
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+          continue;
+        }
         if (value !== undefined && value !== null && value !== '') {
           searchParams.append(key, String(value));
         }
-      });
+      }
       const queryString = searchParams.toString();
       if (queryString) {
         fullUrl += (fullUrl.includes('?') ? '&' : '?') + queryString;
@@ -1167,23 +1526,31 @@ export class HttpClient {
     let errorData: any = {};
     try {
       const parsed = await response.json();
-      if (parsed && typeof parsed === 'object') {
-        errorData = parsed;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        errorData = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (k !== '__proto__' && k !== 'constructor' && k !== 'prototype') {
+            errorData[k] = v;
+          }
+        }
       } else {
         errorData = { message: String(parsed) };
       }
     } catch {
       try {
-        errorData = { message: await response.text() };
+        const text = await response.text();
+        // Borner la taille maximale du message d'erreur pour éviter l'épuisement mémoire
+        errorData = { message: text.slice(0, 2048) };
       } catch {
         errorData = { message: response.statusText || 'Erreur inconnue' };
       }
     }
 
-    const message =
+    const rawMessage =
       (errorData && typeof errorData.message === 'string' && errorData.message) ||
       (errorData && typeof errorData.error === 'string' && errorData.error) ||
       `Erreur serveur (${response.status})`;
+    const message = rawMessage.slice(0, 1000);
     const errorType =
       (errorData && typeof errorData.error === 'string' && errorData.error) || 'API_ERROR';
     const field = errorData && typeof errorData.field === 'string' ? errorData.field : undefined;
@@ -1210,7 +1577,7 @@ export class AuthModule {
     });
 
     if (response && response.token) {
-      this.http.setToken(response.token);
+      this.http.setAuthTokens(response.token, response.refreshToken);
     }
 
     return response;
@@ -1227,7 +1594,7 @@ export class AuthModule {
     });
 
     if (response && response.token) {
-      this.http.setToken(response.token);
+      this.http.setAuthTokens(response.token, response.refreshToken);
     }
 
     return response;
@@ -1244,7 +1611,27 @@ export class AuthModule {
     });
 
     if (response && response.token) {
-      this.http.setToken(response.token);
+      this.http.setAuthTokens(response.token, response.refreshToken);
+    }
+
+    return response;
+  }
+
+  /**
+   * Rafraîchissement explicite du token d'authentification client.
+   */
+  public async refreshToken(refreshToken?: string): Promise<CustomerRefreshTokenResponse> {
+    const tokenToRefresh = refreshToken || this.http.getRefreshToken();
+    const response = await this.http.request<CustomerRefreshTokenResponse>('/api/auth/refresh', {
+      method: 'POST',
+      body: tokenToRefresh ? { refreshToken: tokenToRefresh } : undefined,
+      headers: tokenToRefresh ? { 'x-refresh-token': tokenToRefresh } : {},
+      skipAuthRefresh: true,
+      retries: 0
+    });
+
+    if (response && response.token) {
+      this.http.setAuthTokens(response.token, response.refreshToken || tokenToRefresh);
     }
 
     return response;
@@ -1256,10 +1643,14 @@ export class AuthModule {
   public async logout(): Promise<void> {
     try {
       await this.http.request<void>('/api/auth/customers/logout', {
-        method: 'POST'
+        method: 'POST',
+        skipAuthRefresh: true,
+        retries: 0
       });
+    } catch {
+      // Ignorer l'erreur réseau ou 401 lors de la déconnexion
     } finally {
-      this.http.clearToken();
+      this.http.clearTokens();
     }
   }
 
@@ -1805,6 +2196,86 @@ export class VitrineModule {
       params: { page, size }
     });
   }
+
+  /**
+   * Récupère les témoignages validés par identifiant UUID du restaurant.
+   */
+  public async getTestimonials(restaurantId?: string): Promise<TestimonialResponse[]> {
+    const target = restaurantId || this.http.getConfig().restaurantId;
+    return this.http.request<TestimonialResponse[]>(`/api/public/testimonials/${encodeURIComponent(target || '')}`, {
+      method: 'GET'
+    });
+  }
+
+  /**
+   * Valide la clé API Vitrine via le backend Restorino (POST /api/vitrine/api-keys/validate).
+   * Vérifie la validité, l'expiration, l'état actif et les permissions (READ, WRITE, etc.).
+   */
+  public async validateApiKey(apiKey?: string): Promise<ValidateApiKeyResponse> {
+    const key = apiKey || this.http.getConfig().apiKey;
+    const customHeaders: Record<string, string> = {};
+    if (apiKey && apiKey !== this.http.getConfig().apiKey) {
+      customHeaders['X-API-Key'] = apiKey;
+    }
+    return this.http.request<ValidateApiKeyResponse>('/api/vitrine/api-keys/validate', {
+      method: 'POST',
+      body: key ? { apiKey: key } : undefined,
+      headers: Object.keys(customHeaders).length > 0 ? customHeaders : undefined,
+      skipAuthRefresh: true,
+      retries: 0
+    });
+  }
+
+  /**
+   * Récupère la configuration vitrine complète authentifiée par clé API (GET /api/vitrine/{tenantId}/config).
+   * L'en-tête X-API-Key est obligatoire pour les applications storefront externes (Lovable, React, Next.js).
+   */
+  public async getConfig(tenantIdOrSubdomain?: string): Promise<VitrineConfigResponse> {
+    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
+    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target || '')}/config`, {
+      method: 'GET'
+    });
+  }
+
+  /**
+   * Récupère la configuration vitrine publique publiée (GET /api/vitrine/{tenantIdOrSubdomain}/public).
+   * Endpoint public direct sans clé API requise.
+   */
+  public async getPublicConfig(tenantIdOrSubdomain?: string): Promise<VitrineConfigResponse> {
+    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
+    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target || '')}/public`, {
+      method: 'GET'
+    });
+  }
+
+  /**
+   * Liste des templates de vitrine disponibles (GET /api/vitrine/templates).
+   */
+  public async getTemplates(): Promise<TemplateResponse[]> {
+    return this.http.request<TemplateResponse[]>('/api/vitrine/templates', {
+      method: 'GET'
+    });
+  }
+
+  /**
+   * Résout un nom de domaine ou sous-domaine vers son tenantId (GET /api/vitrine/resolve-domain?domain=...).
+   */
+  public async resolveCustomDomain(domain: string): Promise<DomainResolutionResponse> {
+    return this.http.request<DomainResolutionResponse>('/api/vitrine/resolve-domain', {
+      method: 'GET',
+      params: { domain }
+    });
+  }
+
+  /**
+   * Récupère le bundle JSON-LD Schema.org (@graph) officiel du site vitrine pour Google Rich Results.
+   */
+  public async getSchemaOrg(tenantIdOrSubdomain?: string): Promise<Record<string, any>> {
+    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
+    return this.http.request<Record<string, any>>(`/api/vitrine/${encodeURIComponent(target || '')}/schema.json`, {
+      method: 'GET'
+    });
+  }
 }
 
 // ==========================================
@@ -1951,6 +2422,46 @@ export class OrdersModule {
       }
     });
   }
+
+  /**
+   * Surveille en direct l'état d'avancement d'une commande (polling intelligent avec arrêt automatique).
+   * Retourne une fonction de désabonnement / arrêt du flux.
+   */
+  public watchOrder(
+    orderId: string,
+    verification: OrderTrackingVerification,
+    callback: (status: OrderTrackingResponse) => void,
+    options: { intervalMs?: number; onError?: (err: Error) => void; restaurantId?: string } = {}
+  ): () => void {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interval = Math.max(options.intervalMs ?? 5000, 50);
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const tracking = await this.trackOrder(orderId, verification, options.restaurantId);
+        if (stopped) return;
+        callback(tracking);
+        if (tracking.isDelivered || tracking.status === 'DELIVERED' || tracking.status === 'CANCELLED') {
+          return;
+        }
+      } catch (err: any) {
+        if (!stopped && options.onError) {
+          options.onError(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      if (!stopped) {
+        timer = setTimeout(poll, interval);
+      }
+    };
+
+    timer = setTimeout(poll, 0);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }
 }
 
 // ==========================================
@@ -1967,6 +2478,45 @@ export class DeliveryModule {
     return this.http.request<PublicTrackingResponse>(`/api/public/deliveries/track/${encodeURIComponent(trackingNumber)}`, {
       method: 'GET'
     });
+  }
+
+  /**
+   * Surveille en direct la position GPS et l'état d'avancement du coursier.
+   * Retourne une fonction de désabonnement / arrêt du flux.
+   */
+  public watchDelivery(
+    trackingNumber: string,
+    callback: (delivery: PublicTrackingResponse) => void,
+    options: { intervalMs?: number; onError?: (err: Error) => void } = {}
+  ): () => void {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interval = Math.max(options.intervalMs ?? 4000, 50);
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const data = await this.track(trackingNumber);
+        if (stopped) return;
+        callback(data);
+        if (data.status === 'DELIVERED' || data.status === 'FAILED') {
+          return;
+        }
+      } catch (err: any) {
+        if (!stopped && options.onError) {
+          options.onError(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      if (!stopped) {
+        timer = setTimeout(poll, interval);
+      }
+    };
+
+    timer = setTimeout(poll, 0);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
   }
 }
 
@@ -1989,32 +2539,6 @@ export class TablesModule {
 }
 
 // ==========================================
-// SOURCE: modules/tv.ts
-// ==========================================
-
-export class TvModule {
-  constructor(private http: HttpClient) {}
-
-  /**
-   * Récupère les données d'affichage dynamique pour un écran TV / Kiosk restaurant.
-   */
-  public async getScreenData(screenCode: string): Promise<TvPublicScreenDataResponse> {
-    return this.http.request<TvPublicScreenDataResponse>(`/api/public/tv/${encodeURIComponent(screenCode)}`, {
-      method: 'GET'
-    });
-  }
-
-  /**
-   * Ping keepalive pour signaler qu'un écran TV est toujours actif.
-   */
-  public async ping(screenCode: string): Promise<void> {
-    return this.http.request<void>(`/api/public/tv/${encodeURIComponent(screenCode)}/ping`, {
-      method: 'POST'
-    });
-  }
-}
-
-// ==========================================
 // SOURCE: modules/live-agent.ts
 // ==========================================
 
@@ -2024,6 +2548,7 @@ export class TvModule {
 export class LiveAgentSession {
   private ws: WebSocket | null = null;
   private status: LiveAgentStatus = 'CONNECTING';
+  private listeners: Map<LiveAgentEvent, Set<Function>> = new Map();
 
   constructor(
     private config: LiveAgentSessionConfig,
@@ -2032,10 +2557,46 @@ export class LiveAgentSession {
     this.initWebSocket(resolvedWsUrl);
   }
 
+  /**
+   * Enregistre un écouteur d'événement typé.
+   * Retourne une fonction de désabonnement pour les cycles de vie React (useEffect).
+   */
+  public on<E extends LiveAgentEvent>(event: E, listener: LiveAgentEventListener<E>): () => void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(listener);
+    return () => this.off(event, listener);
+  }
+
+  /**
+   * Supprime un écouteur d'événement précédemment enregistré.
+   */
+  public off<E extends LiveAgentEvent>(event: E, listener: LiveAgentEventListener<E>): void {
+    const set = this.listeners.get(event);
+    if (set) {
+      set.delete(listener);
+    }
+  }
+
+  private emit<E extends LiveAgentEvent>(event: E, ...args: any[]): void {
+    const set = this.listeners.get(event);
+    if (set) {
+      for (const listener of set) {
+        try {
+          (listener as any)(...args);
+        } catch {
+          // Isoler les erreurs des callbacks abonnés
+        }
+      }
+    }
+  }
+
   private initWebSocket(url: string): void {
     if (typeof WebSocket === 'undefined') {
       const err = new Error("L'API WebSocket n'est pas disponible dans cet environnement.");
       if (this.config.onError) this.config.onError(err);
+      this.emit('error', err);
       this.updateStatus('ERROR');
       return;
     }
@@ -2052,29 +2613,46 @@ export class LiveAgentSession {
         if (typeof event.data === 'string') {
           try {
             const data = JSON.parse(event.data);
-            if (data.type === 'TRANSCRIPT' && this.config.onTranscript) {
-              this.config.onTranscript(data.role, data.text);
+            if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+            // Protection contre la pollution de prototype
+            if (data.type === '__proto__' || data.action === '__proto__') return;
+
+            if (data.type === 'TRANSCRIPT') {
+              if (this.config.onTranscript) this.config.onTranscript(data.role, data.text);
+              this.emit('transcript', data.role, data.text);
             } else if (data.type === 'STATUS' && data.message) {
               this.updateStatus(data.message as LiveAgentStatus);
             } else if (data.type === 'INTERRUPTED') {
               if (this.config.onInterrupted) this.config.onInterrupted();
+              this.emit('interrupted');
               this.updateStatus('INTERRUPTED');
-            } else if (data.action && this.config.onClientAction) {
-              this.config.onClientAction({
+            } else if (data.action && typeof data.action === 'string') {
+              const safePayload: Record<string, any> = {};
+              for (const [k, v] of Object.entries(data)) {
+                if (k !== '__proto__' && k !== 'constructor' && k !== 'prototype') {
+                  safePayload[k] = v;
+                }
+              }
+              const actionPayload: LiveAgentClientAction = {
                 action: data.action,
-                payload: data
-              });
+                payload: safePayload
+              };
+              if (this.config.onClientAction) this.config.onClientAction(actionPayload);
+              this.emit('action', actionPayload);
             }
           } catch {
             // Message texte brut
             if (this.config.onTranscript) {
               this.config.onTranscript('assistant', event.data);
             }
+            this.emit('transcript', 'assistant', event.data);
           }
         } else if (event.data instanceof ArrayBuffer) {
+          const uint8 = new Uint8Array(event.data);
           if (this.config.onAudio) {
-            this.config.onAudio(new Uint8Array(event.data));
+            this.config.onAudio(uint8);
           }
+          this.emit('audio', uint8);
           this.updateStatus('SPEAKING');
         }
       };
@@ -2082,16 +2660,20 @@ export class LiveAgentSession {
       this.ws.onerror = () => {
         const error = new Error('Erreur de connexion WebSocket avec le Live Agent.');
         if (this.config.onError) this.config.onError(error);
+        this.emit('error', error);
         this.updateStatus('ERROR');
       };
 
       this.ws.onclose = () => {
         this.updateStatus('DISCONNECTED');
         if (this.config.onClose) this.config.onClose();
+        this.emit('close');
         this.ws = null;
       };
     } catch (e: any) {
-      if (this.config.onError) this.config.onError(e);
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (this.config.onError) this.config.onError(err);
+      this.emit('error', err);
       this.updateStatus('ERROR');
     }
   }
@@ -2101,6 +2683,7 @@ export class LiveAgentSession {
     if (this.config.onStatusChange) {
       this.config.onStatusChange(newStatus);
     }
+    this.emit('status', newStatus);
   }
 
   /**
@@ -2159,7 +2742,8 @@ export class LiveAgentModule {
    * Démarre une session vocale interactive avec le conseiller virtuel du restaurant.
    */
   public connect(config: LiveAgentSessionConfig): LiveAgentSession {
-    const slug = config.restaurantSlug || this.http.getConfig().restaurantId || '';
+    const rawSlug = config.restaurantSlug || this.http.getConfig().restaurantId || '';
+    const slug = rawSlug.replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '').trim();
     let wsUrl = config.wsUrl;
 
     if (!wsUrl) {
@@ -2167,13 +2751,156 @@ export class LiveAgentModule {
       const wsProtocol = base.startsWith('https') ? 'wss' : 'ws';
       const host = base.replace(/^https?:\/\//, '').replace(/\/+$/, '');
       wsUrl = `${wsProtocol}://${host}/ws/public/live-agent?restaurantSlug=${encodeURIComponent(slug)}`;
-    } else if (!wsUrl.includes('restaurantSlug=')) {
-      const separator = wsUrl.includes('?') ? '&' : '?';
-      wsUrl = `${wsUrl}${separator}restaurantSlug=${encodeURIComponent(slug)}`;
+    } else {
+      if (!/^wss?:\/\//i.test(wsUrl.trim())) {
+        throw new Error("L'URL WebSocket doit obligatoirement commencer par 'ws://' ou 'wss://'.");
+      }
+      if (!wsUrl.includes('restaurantSlug=')) {
+        const separator = wsUrl.includes('?') ? '&' : '?';
+        wsUrl = `${wsUrl}${separator}restaurantSlug=${encodeURIComponent(slug)}`;
+      }
     }
 
     return new LiveAgentSession(config, wsUrl);
   }
+}
+
+// ==========================================
+// SOURCE: utils/format.ts
+// ==========================================
+
+/**
+ * Formate un montant numérique selon une devise et une locale.
+ *
+ * @param amount Montant numérique (ex: 12.5)
+ * @param currency Code ISO de la devise (défaut: 'EUR')
+ * @param locale Locale BCP 47 (défaut: 'fr-FR')
+ */
+export function formatCurrency(
+  amount: number,
+  currency = 'EUR',
+  locale = 'fr-FR'
+): string {
+  if (typeof amount !== 'number' || isNaN(amount)) {
+    return `0,00 ${currency}`;
+  }
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: currency.toUpperCase()
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
+
+/**
+ * Formate une date ISO en chaîne lisible pour les commandes et réservations.
+ */
+export function formatDate(
+  isoDate: string,
+  options: Intl.DateTimeFormatOptions = {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  },
+  locale = 'fr-FR'
+): string {
+  if (!isoDate) return '';
+  try {
+    const d = new Date(isoDate);
+    if (isNaN(d.getTime())) return isoDate;
+    return new Intl.DateTimeFormat(locale, options).format(d);
+  } catch {
+    return isoDate;
+  }
+}
+
+// ==========================================
+// SOURCE: utils/cart.ts
+// ==========================================
+
+export interface CartCalculationResult {
+  subtotal: number;
+  deliveryFee: number;
+  discount: number;
+  total: number;
+  itemCount: number;
+}
+
+export interface CartCalculationOptions {
+  deliveryFee?: number;
+  discountAmount?: number;
+  discountPercent?: number;
+}
+
+/**
+ * Calcule les sous-totaux, frais et totaux d'un panier d'articles.
+ */
+export function calculateCart(
+  items: OrderItemRequest[],
+  options: CartCalculationOptions = {}
+): CartCalculationResult {
+  if (!Array.isArray(items)) {
+    return { subtotal: 0, deliveryFee: 0, discount: 0, total: 0, itemCount: 0 };
+  }
+
+  let subtotal = 0;
+  let itemCount = 0;
+
+  for (const item of items) {
+    if (!item) continue;
+    const qty = Math.max(0, item.quantity || 1);
+    const unit = Math.max(0, item.unitPrice || 0);
+    subtotal += unit * qty;
+    itemCount += qty;
+  }
+
+  const deliveryFee = Math.max(0, options.deliveryFee || 0);
+  let discount = Math.max(0, options.discountAmount || 0);
+
+  if (options.discountPercent && options.discountPercent > 0) {
+    const percentDiscount = (subtotal * Math.min(100, options.discountPercent)) / 100;
+    discount = Math.max(discount, percentDiscount);
+  }
+
+  // Le rabais ne peut pas dépasser le sous-total
+  discount = Math.min(subtotal, discount);
+  const total = Math.max(0, subtotal - discount + deliveryFee);
+
+  return {
+    subtotal: Math.round(subtotal * 100) / 100,
+    deliveryFee: Math.round(deliveryFee * 100) / 100,
+    discount: Math.round(discount * 100) / 100,
+    total: Math.round(total * 100) / 100,
+    itemCount
+  };
+}
+
+/**
+ * Vérifie si un plat contient un ou plusieurs allergènes spécifiés par le client.
+ */
+export function checkAllergensConflict(
+  dishAllergens: string[] = [],
+  customerAllergens: string[] = []
+): { hasConflict: boolean; conflictingAllergens: string[] } {
+  if (!Array.isArray(dishAllergens) || !Array.isArray(customerAllergens)) {
+    return { hasConflict: false, conflictingAllergens: [] };
+  }
+
+  const customerSet = new Set(
+    customerAllergens.map((a) => String(a).toLowerCase().trim())
+  );
+
+  const conflicts = dishAllergens
+    .map((a) => String(a).trim())
+    .filter((a) => customerSet.has(a.toLowerCase()));
+
+  return {
+    hasConflict: conflicts.length > 0,
+    conflictingAllergens: conflicts
+  };
 }
 
 // ==========================================
@@ -2222,11 +2949,6 @@ export class RestorinoClient {
   public tables: TablesModule;
 
   /**
-   * Module d'affichage dynamique sur écran TV / Kiosk.
-   */
-  public tv: TvModule;
-
-  /**
    * Module d'agent vocal et conseiller culinaire interactif (Gemini Live).
    */
   public liveAgent: LiveAgentModule;
@@ -2240,7 +2962,6 @@ export class RestorinoClient {
     this.orders = new OrdersModule(this.http);
     this.delivery = new DeliveryModule(this.http);
     this.tables = new TablesModule(this.http);
-    this.tv = new TvModule(this.http);
     this.liveAgent = new LiveAgentModule(this.http);
   }
 
@@ -2259,10 +2980,45 @@ export class RestorinoClient {
   }
 
   /**
-   * Définit manuellement le token JWT client.
+   * Récupère le refresh token actuellement actif.
    */
-  public setToken(token: string | null): void {
-    this.http.setToken(token);
+  public getRefreshToken(): string | null {
+    return this.http.getRefreshToken();
+  }
+
+  /**
+   * Récupère la clé API Vitrine actuellement configurée.
+   */
+  public getApiKey(): string | null {
+    return this.http.getApiKey();
+  }
+
+  /**
+   * Définit dynamiquement la clé API Vitrine.
+   */
+  public setApiKey(apiKey: string | null): void {
+    this.http.setApiKey(apiKey);
+  }
+
+  /**
+   * Définit manuellement le token JWT client (et optionnellement son refresh token).
+   */
+  public setToken(token: string | null, refreshToken?: string | null): void {
+    this.http.setAuthTokens(token, refreshToken);
+  }
+
+  /**
+   * Définit manuellement le refresh token client.
+   */
+  public setRefreshToken(refreshToken: string | null): void {
+    this.http.setRefreshToken(refreshToken);
+  }
+
+  /**
+   * Définit simultanément le token d'accès et le refresh token.
+   */
+  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+    this.http.setAuthTokens(token, refreshToken);
   }
 
   /**
@@ -2273,10 +3029,38 @@ export class RestorinoClient {
   }
 
   /**
-   * Déconnexion locale rapide.
+   * Déconnexion locale rapide (vide les tokens en mémoire et stockage).
    */
   public logoutLocal(): void {
-    this.http.clearToken();
+    this.http.clearTokens();
+  }
+
+  /**
+   * Formate un montant dans la devise du restaurant (ex: 15.50 -> "15,50 €").
+   */
+  public formatCurrency(amount: number, currency = 'EUR', locale = 'fr-FR'): string {
+    return formatCurrency(amount, currency, locale);
+  }
+
+  /**
+   * Formate une date ISO en chaîne lisible.
+   */
+  public formatDate(isoDate: string, options?: Intl.DateTimeFormatOptions, locale = 'fr-FR'): string {
+    return formatDate(isoDate, options, locale);
+  }
+
+  /**
+   * Calcule les totaux, remises et frais d'un panier d'articles.
+   */
+  public calculateCart(items: OrderItemRequest[], options?: CartCalculationOptions): CartCalculationResult {
+    return calculateCart(items, options);
+  }
+
+  /**
+   * Vérifie les conflits d'allergènes entre un plat et les allergies du client.
+   */
+  public checkAllergens(dishAllergens: string[], customerAllergens: string[]) {
+    return checkAllergensConflict(dishAllergens, customerAllergens);
   }
 }
 

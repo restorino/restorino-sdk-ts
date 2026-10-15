@@ -7,8 +7,15 @@ import { VitrineModule } from './modules/vitrine';
 import { OrdersModule } from './modules/orders';
 import { DeliveryModule } from './modules/delivery';
 import { TablesModule } from './modules/tables';
-import { TvModule } from './modules/tv';
 import { LiveAgentModule } from './modules/live-agent';
+import { formatCurrency, formatDate } from './utils/format';
+import {
+  calculateCart,
+  checkAllergensConflict,
+  CartCalculationResult,
+  CartCalculationOptions
+} from './utils/cart';
+import { OrderItemRequest } from './types/orders';
 
 /**
  * Client SDK unifié Restorino pour Lovable.dev et applications Frontend.
@@ -52,11 +59,6 @@ export class RestorinoClient {
   public tables: TablesModule;
 
   /**
-   * Module d'affichage dynamique sur écran TV / Kiosk.
-   */
-  public tv: TvModule;
-
-  /**
    * Module d'agent vocal et conseiller culinaire interactif (Gemini Live).
    */
   public liveAgent: LiveAgentModule;
@@ -70,7 +72,6 @@ export class RestorinoClient {
     this.orders = new OrdersModule(this.http);
     this.delivery = new DeliveryModule(this.http);
     this.tables = new TablesModule(this.http);
-    this.tv = new TvModule(this.http);
     this.liveAgent = new LiveAgentModule(this.http);
   }
 
@@ -89,10 +90,45 @@ export class RestorinoClient {
   }
 
   /**
-   * Définit manuellement le token JWT client.
+   * Récupère le refresh token actuellement actif.
    */
-  public setToken(token: string | null): void {
-    this.http.setToken(token);
+  public getRefreshToken(): string | null {
+    return this.http.getRefreshToken();
+  }
+
+  /**
+   * Récupère la clé API Vitrine actuellement configurée.
+   */
+  public getApiKey(): string | null {
+    return this.http.getApiKey();
+  }
+
+  /**
+   * Définit dynamiquement la clé API Vitrine.
+   */
+  public setApiKey(apiKey: string | null): void {
+    this.http.setApiKey(apiKey);
+  }
+
+  /**
+   * Définit manuellement le token JWT client (et optionnellement son refresh token).
+   */
+  public setToken(token: string | null, refreshToken?: string | null): void {
+    this.http.setAuthTokens(token, refreshToken);
+  }
+
+  /**
+   * Définit manuellement le refresh token client.
+   */
+  public setRefreshToken(refreshToken: string | null): void {
+    this.http.setRefreshToken(refreshToken);
+  }
+
+  /**
+   * Définit simultanément le token d'accès et le refresh token.
+   */
+  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+    this.http.setAuthTokens(token, refreshToken);
   }
 
   /**
@@ -103,9 +139,38 @@ export class RestorinoClient {
   }
 
   /**
-   * Déconnexion locale rapide.
+   * Déconnexion locale rapide (vide les tokens en mémoire et stockage).
    */
   public logoutLocal(): void {
-    this.http.clearToken();
+    this.http.clearTokens();
+  }
+
+  /**
+   * Formate un montant dans la devise du restaurant (ex: 15.50 -> "15,50 €").
+   */
+  public formatCurrency(amount: number, currency = 'EUR', locale = 'fr-FR'): string {
+    return formatCurrency(amount, currency, locale);
+  }
+
+  /**
+   * Formate une date ISO en chaîne lisible.
+   */
+  public formatDate(isoDate: string, options?: Intl.DateTimeFormatOptions, locale = 'fr-FR'): string {
+    return formatDate(isoDate, options, locale);
+  }
+
+  /**
+   * Calcule les totaux, remises et frais d'un panier d'articles.
+   */
+  public calculateCart(items: OrderItemRequest[], options?: CartCalculationOptions): CartCalculationResult {
+    return calculateCart(items, options);
+  }
+
+  /**
+   * Vérifie les conflits d'allergènes entre un plat et les allergies du client.
+   */
+  public checkAllergens(dishAllergens: string[], customerAllergens: string[]) {
+    return checkAllergensConflict(dishAllergens, customerAllergens);
   }
 }
+

@@ -12,19 +12,3 @@ export interface PublicTableResponse {
   restaurantName: string;
 }
 
-/**
- * Données d'affichage dynamique pour écran TV / Kiosk restaurant.
- */
-export interface TvPublicScreenDataResponse {
-  screenCode: string;
-  restaurantName: string;
-  preparingOrders: string[];
-  readyOrders: string[];
-  promotions?: {
-    id: string;
-    title: string;
-    description: string;
-    imageUrl?: string;
-  }[];
-  updatedAt: string;
-}

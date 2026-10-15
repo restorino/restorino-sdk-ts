@@ -4,6 +4,7 @@ import {
   CustomerRegisterRequest,
   CustomerGoogleAuthRequest,
   CustomerAuthResponse,
+  CustomerRefreshTokenResponse,
   ChangePasswordRequest,
   PasswordResetRequest,
   PasswordResetConfirmRequest
@@ -24,7 +25,7 @@ export class AuthModule {
     });
 
     if (response && response.token) {
-      this.http.setToken(response.token);
+      this.http.setAuthTokens(response.token, response.refreshToken);
     }
 
     return response;
@@ -41,7 +42,7 @@ export class AuthModule {
     });
 
     if (response && response.token) {
-      this.http.setToken(response.token);
+      this.http.setAuthTokens(response.token, response.refreshToken);
     }
 
     return response;
@@ -58,7 +59,27 @@ export class AuthModule {
     });
 
     if (response && response.token) {
-      this.http.setToken(response.token);
+      this.http.setAuthTokens(response.token, response.refreshToken);
+    }
+
+    return response;
+  }
+
+  /**
+   * Rafraîchissement explicite du token d'authentification client.
+   */
+  public async refreshToken(refreshToken?: string): Promise<CustomerRefreshTokenResponse> {
+    const tokenToRefresh = refreshToken || this.http.getRefreshToken();
+    const response = await this.http.request<CustomerRefreshTokenResponse>('/api/auth/refresh', {
+      method: 'POST',
+      body: tokenToRefresh ? { refreshToken: tokenToRefresh } : undefined,
+      headers: tokenToRefresh ? { 'x-refresh-token': tokenToRefresh } : {},
+      skipAuthRefresh: true,
+      retries: 0
+    });
+
+    if (response && response.token) {
+      this.http.setAuthTokens(response.token, response.refreshToken || tokenToRefresh);
     }
 
     return response;
@@ -70,10 +91,14 @@ export class AuthModule {
   public async logout(): Promise<void> {
     try {
       await this.http.request<void>('/api/auth/customers/logout', {
-        method: 'POST'
+        method: 'POST',
+        skipAuthRefresh: true,
+        retries: 0
       });
+    } catch {
+      // Ignorer l'erreur réseau ou 401 lors de la déconnexion
     } finally {
-      this.http.clearToken();
+      this.http.clearTokens();
     }
   }
 

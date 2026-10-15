@@ -7,6 +7,7 @@ export * from './modules/vitrine';
 export * from './modules/orders';
 export * from './modules/delivery';
 export * from './modules/tables';
-export * from './modules/tv';
 export * from './modules/live-agent';
+export * from './utils/format';
+export * from './utils/cart';
 export * from './client';

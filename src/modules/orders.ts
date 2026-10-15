@@ -155,4 +155,45 @@ export class OrdersModule {
       }
     });
   }
+
+  /**
+   * Surveille en direct l'état d'avancement d'une commande (polling intelligent avec arrêt automatique).
+   * Retourne une fonction de désabonnement / arrêt du flux.
+   */
+  public watchOrder(
+    orderId: string,
+    verification: OrderTrackingVerification,
+    callback: (status: OrderTrackingResponse) => void,
+    options: { intervalMs?: number; onError?: (err: Error) => void; restaurantId?: string } = {}
+  ): () => void {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interval = Math.max(options.intervalMs ?? 5000, 50);
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const tracking = await this.trackOrder(orderId, verification, options.restaurantId);
+        if (stopped) return;
+        callback(tracking);
+        if (tracking.isDelivered || tracking.status === 'DELIVERED' || tracking.status === 'CANCELLED') {
+          return;
+        }
+      } catch (err: any) {
+        if (!stopped && options.onError) {
+          options.onError(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      if (!stopped) {
+        timer = setTimeout(poll, interval);
+      }
+    };
+
+    timer = setTimeout(poll, 0);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }
 }
+

@@ -23,13 +23,16 @@ export class RestorinoApiError extends Error {
  * Options configurables par requête HTTP.
  */
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
   body?: any;
   params?: Record<string, any>;
   headers?: Record<string, string>;
   requiresAuth?: boolean;
   isFormData?: boolean;
   timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
+  skipAuthRefresh?: boolean;
   signal?: AbortSignal;
 }
 
@@ -39,12 +42,17 @@ export interface RequestOptions {
 export class HttpClient {
   private config: RestorinoClientConfig;
   private token: string | null = null;
+  private refreshToken: string | null = null;
   private tokenStorageKey: string;
+  private refreshTokenStorageKey: string;
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor(config: RestorinoClientConfig) {
     this.config = config;
     this.tokenStorageKey = config.tokenStorageKey || 'restorino_customer_token';
+    this.refreshTokenStorageKey = config.refreshTokenStorageKey || 'restorino_customer_refresh_token';
     this.token = this.loadToken();
+    this.refreshToken = this.loadRefreshToken();
   }
 
   /**
@@ -55,22 +63,49 @@ export class HttpClient {
   }
 
   /**
+   * Récupère le refresh token en mémoire ou dans le stockage.
+   */
+  public getRefreshToken(): string | null {
+    return this.refreshToken;
+  }
+
+  /**
+   * Récupère la clé API configurée.
+   */
+  public getApiKey(): string | null {
+    return this.config.apiKey || null;
+  }
+
+  /**
+   * Définit dynamiquement la clé API Vitrine.
+   */
+  public setApiKey(apiKey: string | null): void {
+    this.config.apiKey = apiKey || undefined;
+  }
+
+  /**
    * Enregistre un nouveau token JWT client.
    */
   public setToken(token: string | null): void {
     this.token = token;
-    if (typeof window === 'undefined') return;
+    this.persistValue(this.tokenStorageKey, token);
+  }
 
-    try {
-      if (this.config.storageType === 'sessionStorage') {
-        if (token) sessionStorage.setItem(this.tokenStorageKey, token);
-        else sessionStorage.removeItem(this.tokenStorageKey);
-      } else if (this.config.storageType !== 'memory') {
-        if (token) localStorage.setItem(this.tokenStorageKey, token);
-        else localStorage.removeItem(this.tokenStorageKey);
-      }
-    } catch {
-      // Ignorer si localStorage/sessionStorage est bloqué
+  /**
+   * Enregistre un nouveau refresh token client.
+   */
+  public setRefreshToken(refreshToken: string | null): void {
+    this.refreshToken = refreshToken;
+    this.persistValue(this.refreshTokenStorageKey, refreshToken);
+  }
+
+  /**
+   * Enregistre simultanément le token d'accès et le refresh token.
+   */
+  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+    this.setToken(token);
+    if (refreshToken !== undefined) {
+      this.setRefreshToken(refreshToken);
     }
   }
 
@@ -82,10 +117,24 @@ export class HttpClient {
   }
 
   /**
+   * Supprime l'ensemble des tokens (accès et rafraîchissement).
+   */
+  public clearTokens(): void {
+    this.setToken(null);
+    this.setRefreshToken(null);
+  }
+
+  /**
    * Met à jour dynamiquement la configuration du client (ex: changement de restaurantId).
    */
   public updateConfig(newConfig: Partial<RestorinoClientConfig>): void {
-    this.config = { ...this.config, ...newConfig };
+    if (!newConfig || typeof newConfig !== 'object') return;
+    const safeConfig: Partial<RestorinoClientConfig> = {};
+    for (const [key, value] of Object.entries(newConfig)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      (safeConfig as any)[key] = value;
+    }
+    this.config = { ...this.config, ...safeConfig };
   }
 
   /**
@@ -95,18 +144,39 @@ export class HttpClient {
     return this.config;
   }
 
-  private loadToken(): string | null {
+  private persistValue(key: string, value: string | null): void {
+    if (typeof window === 'undefined') return;
+    try {
+      if (this.config.storageType === 'sessionStorage') {
+        if (value) sessionStorage.setItem(key, value);
+        else sessionStorage.removeItem(key);
+      } else if (this.config.storageType !== 'memory') {
+        if (value) localStorage.setItem(key, value);
+        else localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignorer si stockage inaccessible
+    }
+  }
+
+  private loadStoredValue(key: string): string | null {
     if (typeof window === 'undefined') return null;
     try {
       let raw: string | null = null;
       if (this.config.storageType === 'sessionStorage') {
-        raw = sessionStorage.getItem(this.tokenStorageKey);
+        raw = sessionStorage.getItem(key);
       } else if (this.config.storageType !== 'memory') {
-        raw = localStorage.getItem(this.tokenStorageKey);
+        raw = localStorage.getItem(key);
       }
       if (raw && typeof raw === 'string') {
         const trimmed = raw.trim();
-        if (trimmed !== '' && trimmed !== 'null' && trimmed !== 'undefined') {
+        // Prévention contre les tokens empoisonnés contenant CRLF, caractères de contrôle ou séparateurs Unicode
+        if (
+          trimmed !== '' &&
+          trimmed !== 'null' &&
+          trimmed !== 'undefined' &&
+          !/[\r\n\x00-\x1F\x7F\u2028\u2029]/.test(trimmed)
+        ) {
           return trimmed;
         }
       }
@@ -116,17 +186,139 @@ export class HttpClient {
     }
   }
 
-  /**
-   * Nettoie les valeurs d'en-tête contre l'injection CRLF et caractères de contrôle.
-   */
-  private sanitizeHeaderValue(val: string): string {
-    return val.replace(/[\r\n\x00-\x1F\x7F]/g, '').trim();
+  private loadToken(): string | null {
+    return this.loadStoredValue(this.tokenStorageKey);
+  }
+
+  private loadRefreshToken(): string | null {
+    return this.loadStoredValue(this.refreshTokenStorageKey);
   }
 
   /**
-   * Effectue un appel HTTP générique avec gestion du timeout et annulation (AbortController).
+   * Tente de rafraîchir le token JWT via l'endpoint de refresh du backend.
+   * Utilise une promesse partagée pour mutualiser les requêtes concurrentes.
+   */
+  public async tryRefreshToken(): Promise<boolean> {
+    const currentRefreshToken = this.refreshToken;
+    if (!currentRefreshToken) {
+      return false;
+    }
+
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        const refreshResponse = await this.executeSingleRequest<{
+          token?: string;
+          refreshToken?: string;
+          success?: boolean;
+        }>('/api/auth/refresh', {
+          method: 'POST',
+          body: { refreshToken: currentRefreshToken },
+          headers: {
+            'x-refresh-token': this.sanitizeHeaderValue(currentRefreshToken)
+          },
+          skipAuthRefresh: true,
+          retries: 0
+        });
+
+        if (refreshResponse && refreshResponse.token) {
+          this.setToken(refreshResponse.token);
+          if (refreshResponse.refreshToken) {
+            this.setRefreshToken(refreshResponse.refreshToken);
+          }
+          return true;
+        } else if (refreshResponse && refreshResponse.success) {
+          return true;
+        }
+        return false;
+      } catch {
+        if (this.config.onRefreshTokenFailed) {
+          this.config.onRefreshTokenFailed();
+        }
+        return false;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  /**
+   * Nettoie les valeurs d'en-tête contre l'injection CRLF, injection de sauts de ligne Unicode et caractères de contrôle.
+   */
+  private sanitizeHeaderValue(val: unknown): string {
+    if (val === null || val === undefined) return '';
+    return String(val).replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '').trim();
+  }
+
+  /**
+   * Effectue un appel HTTP avec gestion de retry exponentiel et annulation.
    */
   public async request<T>(
+    endpoint: string,
+    options: RequestOptions = {}
+  ): Promise<T> {
+    const method = options.method || 'GET';
+    const isIdempotent = method === 'GET' || method === 'HEAD';
+    const maxRetries = options.retries !== undefined
+      ? options.retries
+      : (isIdempotent ? (this.config.retries ?? 0) : 0);
+    const baseRetryDelay = options.retryDelayMs !== undefined
+      ? options.retryDelayMs
+      : (this.config.retryDelayMs ?? 300);
+
+    let lastError: any = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (options.signal?.aborted) {
+        throw new RestorinoApiError(0, 'Requête annulée.', 'REQUEST_ABORTED');
+      }
+
+      if (attempt > 0) {
+        // Backoff exponentiel avec jitter
+        const delay = Math.min(baseRetryDelay * Math.pow(2, attempt - 1) + Math.random() * 50, 10000);
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, delay);
+          if (options.signal) {
+            options.signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(new RestorinoApiError(0, 'Requête annulée pendant le réessai.', 'REQUEST_ABORTED'));
+            }, { once: true });
+          }
+        });
+      }
+
+      try {
+        return await this.executeSingleRequest<T>(endpoint, options);
+      } catch (err: any) {
+        lastError = err;
+
+        if (options.signal?.aborted || err?.error === 'REQUEST_ABORTED') {
+          throw err;
+        }
+
+        // Déterminer si l'erreur est transitoire (éligible au retry)
+        const isTransient =
+          err instanceof RestorinoApiError &&
+          (err.status === 0 || err.status === 408 || err.status === 429 || err.status === 502 || err.status === 503 || err.status === 504);
+
+        if (!isTransient || attempt >= maxRetries) {
+          throw err;
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  /**
+   * Effectue une exécution unitaire de requête HTTP.
+   */
+  private async executeSingleRequest<T>(
     endpoint: string,
     options: RequestOptions = {}
   ): Promise<T> {
@@ -138,6 +330,7 @@ export class HttpClient {
       requiresAuth = false,
       isFormData = false,
       timeoutMs,
+      skipAuthRefresh = false,
       signal: callerSignal
     } = options;
 
@@ -181,8 +374,8 @@ export class HttpClient {
       headers['x-restaurant-id'] = this.sanitizeHeaderValue(this.config.restaurantId);
     }
 
-    if (this.config.apiKey) {
-      headers['x-api-key'] = this.sanitizeHeaderValue(this.config.apiKey);
+    if (this.config.apiKey && this.config.allowApiKeyHeader === true) {
+      headers['X-API-Key'] = this.sanitizeHeaderValue(this.config.apiKey);
     }
 
     if (this.token) {
@@ -196,7 +389,7 @@ export class HttpClient {
       method,
       headers,
       body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
-      credentials: 'omit',
+      credentials: this.config.credentials || 'omit',
       signal: controller.signal
     };
 
@@ -215,7 +408,19 @@ export class HttpClient {
     }
 
     if (response.status === 401) {
-      this.clearToken();
+      const autoRefreshEnabled = this.config.autoRefreshToken !== false;
+      if (autoRefreshEnabled && !skipAuthRefresh && this.refreshToken) {
+        const refreshed = await this.tryRefreshToken();
+        if (refreshed) {
+          // Rejouer la requête protégée avec le nouveau token
+          return this.executeSingleRequest<T>(endpoint, {
+            ...options,
+            skipAuthRefresh: true
+          });
+        }
+      }
+
+      this.clearTokens();
       if (this.config.onTokenExpired) {
         this.config.onTokenExpired();
       }
@@ -240,22 +445,34 @@ export class HttpClient {
 
   private buildUrl(endpoint: string, params?: Record<string, any>): string {
     const base = this.config.baseUrl.replace(/\/+$/, '');
-    let cleanEndpoint = endpoint.trim();
+    let cleanEndpoint = (typeof endpoint === 'string' ? endpoint : '').trim();
+
+    // Nettoyer les backslashes (\) et caractères de contrôle pour prévenir les contournements de protocole (SSRF / Open Redirect)
+    cleanEndpoint = cleanEndpoint.replace(/\\/g, '/');
+    cleanEndpoint = cleanEndpoint.replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '');
+
+    // Supprimer le schéma & l'autorité si un endpoint absolu est accidentellement injecté
+    cleanEndpoint = cleanEndpoint.replace(/^https?:\/\/[^\/]+/i, '');
+
     if (!cleanEndpoint.startsWith('/')) {
       cleanEndpoint = '/' + cleanEndpoint;
     }
-    // Prevent protocol-relative redirects (e.g. "//evil.com")
+    // Empêcher les URL protocol-relative (ex: "//evil.com")
     cleanEndpoint = cleanEndpoint.replace(/^\/+/, '/');
 
     let fullUrl = `${base}${cleanEndpoint}`;
 
-    if (params) {
+    if (params && typeof params === 'object') {
       const searchParams = new URLSearchParams();
-      Object.entries(params).forEach(([key, value]) => {
+      for (const [key, value] of Object.entries(params)) {
+        // Protection contre la pollution de prototype
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+          continue;
+        }
         if (value !== undefined && value !== null && value !== '') {
           searchParams.append(key, String(value));
         }
-      });
+      }
       const queryString = searchParams.toString();
       if (queryString) {
         fullUrl += (fullUrl.includes('?') ? '&' : '?') + queryString;
@@ -269,23 +486,31 @@ export class HttpClient {
     let errorData: any = {};
     try {
       const parsed = await response.json();
-      if (parsed && typeof parsed === 'object') {
-        errorData = parsed;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        errorData = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (k !== '__proto__' && k !== 'constructor' && k !== 'prototype') {
+            errorData[k] = v;
+          }
+        }
       } else {
         errorData = { message: String(parsed) };
       }
     } catch {
       try {
-        errorData = { message: await response.text() };
+        const text = await response.text();
+        // Borner la taille maximale du message d'erreur pour éviter l'épuisement mémoire
+        errorData = { message: text.slice(0, 2048) };
       } catch {
         errorData = { message: response.statusText || 'Erreur inconnue' };
       }
     }
 
-    const message =
+    const rawMessage =
       (errorData && typeof errorData.message === 'string' && errorData.message) ||
       (errorData && typeof errorData.error === 'string' && errorData.error) ||
       `Erreur serveur (${response.status})`;
+    const message = rawMessage.slice(0, 1000);
     const errorType =
       (errorData && typeof errorData.error === 'string' && errorData.error) || 'API_ERROR';
     const field = errorData && typeof errorData.field === 'string' ? errorData.field : undefined;

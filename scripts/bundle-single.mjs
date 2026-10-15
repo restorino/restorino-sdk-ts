@@ -33,8 +33,9 @@ const moduleFiles = [
   'modules/orders.ts',
   'modules/delivery.ts',
   'modules/tables.ts',
-  'modules/tv.ts',
   'modules/live-agent.ts',
+  'utils/format.ts',
+  'utils/cart.ts',
   'client.ts'
 ];
 

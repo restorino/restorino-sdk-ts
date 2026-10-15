@@ -66,6 +66,24 @@ export interface CustomerAuthResponse {
 }
 
 /**
+ * Requête de rafraîchissement de token.
+ */
+export interface CustomerRefreshTokenRequest {
+  refreshToken?: string;
+  restaurantId?: string;
+}
+
+/**
+ * Réponse de rafraîchissement de token.
+ */
+export interface CustomerRefreshTokenResponse {
+  token: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  success?: boolean;
+}
+
+/**
  * Requête de modification de mot de passe.
  */
 export interface ChangePasswordRequest {
