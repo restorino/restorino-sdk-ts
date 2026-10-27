@@ -302,11 +302,15 @@ export class HttpClient {
         }
 
         // Déterminer si l'erreur est transitoire (éligible au retry)
+        // 409 Conflict: optimistic lock failure / race condition auto-retryable (1-2 attempts)
+        const isConflict = err instanceof RestorinoApiError && err.status === 409;
         const isTransient =
           err instanceof RestorinoApiError &&
           (err.status === 0 || err.status === 408 || err.status === 429 || err.status === 502 || err.status === 503 || err.status === 504);
 
-        if (!isTransient || attempt >= maxRetries) {
+        const canRetryConflict = isConflict && attempt < 2;
+
+        if ((!isTransient && !canRetryConflict) || (!canRetryConflict && attempt >= maxRetries)) {
           throw err;
         }
       }
