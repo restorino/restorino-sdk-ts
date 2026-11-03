@@ -14,18 +14,33 @@ export interface LiveAgentSessionConfig {
   wsUrl?: string;
 
   /**
+   * Jeton de session déjà obtenu (`POST /api/public/live-agent/{slug}/session`).
+   * S'il est omis, le SDK le demande automatiquement avant d'ouvrir le socket.
+   */
+  grant?: string;
+
+  /**
    * Callback déclenché lors de la réception d'un événement textuel ou transcript.
+   * Le backend émet parfois `agent` : le SDK normalise en `assistant`.
    */
   onTranscript?: (role: 'user' | 'assistant', text: string) => void;
 
   /**
-   * Callback déclenché lors de la réception d'un chunk audio brut (PCM 16kHz).
+   * Callback déclenché à la réception du cadre `AUDIO_META`
+   * (fréquence d'échantillonnage réelle du flux, 24 kHz par défaut).
+   */
+  onAudioMeta?: (meta: LiveAgentAudioMeta) => void;
+
+  /**
+   * Callback déclenché lors de la réception d'un chunk audio brut.
+   * La fréquence réelle est fournie par `onAudioMeta` : ne pas la supposer.
    */
   onAudio?: (audioChunk: Uint8Array) => void;
 
   /**
-   * Callback déclenché lorsque l'agent vocal exécute une action storefront en direct
-   * (ex: ajout automatique d'un plat au panier, redirection vers réservation).
+   * Callback déclenché lorsque l'agent vocal propose une action storefront
+   * (ajout au panier, réservation). L'action reste **en attente** jusqu'à
+   * `session.confirmAction(actionId)`.
    */
   onClientAction?: (action: LiveAgentClientAction) => void;
 
@@ -40,6 +55,12 @@ export interface LiveAgentSessionConfig {
   onInterrupted?: () => void;
 
   /**
+   * Callback déclenché lorsque le serveur termine la session (code 4001).
+   * Le SDK ne doit pas se reconnecter automatiquement.
+   */
+  onSessionEnded?: (reason?: string) => void;
+
+  /**
    * Callback d'erreur.
    */
   onError?: (error: Error) => void;
@@ -48,6 +69,15 @@ export interface LiveAgentSessionConfig {
    * Callback de déconnexion.
    */
   onClose?: () => void;
+}
+
+/**
+ * Métadonnées du flux audio descendant.
+ */
+export interface LiveAgentAudioMeta {
+  encoding?: string;
+  sampleRate: number;
+  channels?: number;
 }
 
 /**
@@ -70,6 +100,8 @@ export type LiveAgentStatus =
 export interface LiveAgentClientAction {
   action: 'ADD_TO_CART' | 'NAVIGATE' | 'SELECT_ITEM' | string;
   payload: Record<string, any>;
+  /** Identifiant à renvoyer via `confirmAction()` pour appliquer l'action. */
+  actionId?: string;
 }
 
 /**
@@ -78,9 +110,11 @@ export interface LiveAgentClientAction {
 export type LiveAgentEvent =
   | 'transcript'
   | 'audio'
+  | 'audioMeta'
   | 'action'
   | 'status'
   | 'interrupted'
+  | 'sessionEnded'
   | 'error'
   | 'close';
 
@@ -90,9 +124,11 @@ export type LiveAgentEvent =
 export type LiveAgentEventListener<E extends LiveAgentEvent> =
   E extends 'transcript' ? (role: 'user' | 'assistant', text: string) => void :
   E extends 'audio' ? (audioChunk: Uint8Array) => void :
+  E extends 'audioMeta' ? (meta: LiveAgentAudioMeta) => void :
   E extends 'action' ? (action: LiveAgentClientAction) => void :
   E extends 'status' ? (status: LiveAgentStatus) => void :
   E extends 'interrupted' ? () => void :
+  E extends 'sessionEnded' ? (reason?: string) => void :
   E extends 'error' ? (error: Error) => void :
   E extends 'close' ? () => void :
   never;

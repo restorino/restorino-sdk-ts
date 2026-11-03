@@ -1,6 +1,7 @@
 import { HttpClient } from '../http/http-client';
 import { CustomerDto } from '../types/auth';
 import {
+  CustomerOrder,
   UpdateCustomerProfileRequest,
   OrderRatingRequest,
   OrderRatingDTO,
@@ -12,7 +13,6 @@ import {
   PromoValidationResponse
 } from '../types/customer';
 import { PublicCategory, PublicProduct, ProductOption } from '../types/vitrine';
-import { OrderResponse } from '../types/orders';
 import { Page, MessageResponse } from '../types/common';
 
 export class CustomerModule {
@@ -42,8 +42,8 @@ export class CustomerModule {
   /**
    * Récupère l'historique paginé des commandes du client.
    */
-  public async getOrders(page = 0, size = 10): Promise<Page<OrderResponse>> {
-    return this.http.request<Page<OrderResponse>>('/api/customers/orders', {
+  public async getOrders(page = 0, size = 10): Promise<Page<CustomerOrder>> {
+    return this.http.request<Page<CustomerOrder>>('/api/customers/orders', {
       method: 'GET',
       params: { page, size },
       requiresAuth: true
@@ -53,8 +53,8 @@ export class CustomerModule {
   /**
    * Récupère le détail d'une commande passée par le client.
    */
-  public async getOrderDetails(orderId: string): Promise<OrderResponse> {
-    return this.http.request<OrderResponse>(`/api/customers/orders/${encodeURIComponent(orderId)}`, {
+  public async getOrderDetails(orderId: string): Promise<CustomerOrder> {
+    return this.http.request<CustomerOrder>(`/api/customers/orders/${encodeURIComponent(orderId)}`, {
       method: 'GET',
       requiresAuth: true
     });
@@ -189,10 +189,12 @@ export class CustomerModule {
 
   /**
    * Suppléments commandables (sauces, extras) du menu du restaurant.
+   * Le backend accepte un filtre optionnel `productId`.
    */
-  public async getMenuSupplements(): Promise<ProductOption[]> {
+  public async getMenuSupplements(productId?: string): Promise<ProductOption[]> {
     return this.http.request<ProductOption[]>('/api/customers/menu/supplements', {
       method: 'GET',
+      params: productId ? { productId } : undefined,
       requiresAuth: true
     });
   }
@@ -211,9 +213,12 @@ export class CustomerModule {
   /**
    * Carte des boissons du restaurant.
    */
-  public async getMenuBeverages(): Promise<ProductOption[]> {
+  public async getMenuBeverages(
+    filters?: { type?: string; size?: string; alcoholic?: boolean }
+  ): Promise<ProductOption[]> {
     return this.http.request<ProductOption[]>('/api/customers/menu/beverages', {
       method: 'GET',
+      params: filters,
       requiresAuth: true
     });
   }

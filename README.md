@@ -7,7 +7,7 @@ SDK officiel TypeScript pour intégrer l'API **Restorino Restaurant SaaS** dans 
 ## ⚡ Prise en main ultra-rapide avec Lovable.dev
 
 Le SDK est disponible en **fichier unique autonome** (Zero-Dependency) :
-👉 [`dist-bundle/restorino-sdk.ts`](./dist-bundle/restorino-sdk.ts) (74.1 KB)
+👉 [`dist-bundle/restorino-sdk.ts`](./dist-bundle/restorino-sdk.ts)
 
 ---
 
@@ -34,8 +34,11 @@ export const api = new RestorinoClient({
   baseUrl: import.meta.env.VITE_RESTORINO_API_URL || 'http://localhost:8080',
   restaurantId: import.meta.env.VITE_RESTAURANT_ID,
   tenantId: import.meta.env.VITE_TENANT_ID,
-  apiKey: import.meta.env.VITE_RESTORINO_API_KEY, // Clé API Vitrine (obligatoire pour /api/vitrine/*)
-  storageType: 'localStorage', // Sauvegarde automatique du JWT client & refresh token
+  // Authentification : cookies HttpOnly côté backend. `credentials: 'include'`
+  // est le défaut. L'origine du storefront doit être autorisée par le CORS du
+  // backend (ou servir l'API via votre propre proxy same-origin).
+  credentials: 'include',
+  storageType: 'memory',       // Aucun jeton n'est lisible en JS en mode cookies
   autoRefreshToken: true,      // Renouvellement transparent sur expiration 401
   retries: 2,                  // Retry automatique avec backoff exponentiel sur requêtes GET
   retryDelayMs: 300,           // Délai initial de réessai
@@ -44,6 +47,26 @@ export const api = new RestorinoClient({
   },
 });
 ```
+
+> ⚠️ **Périmètre storefront uniquement.** Le SDK ne peut appeler que
+> `/api/public/**`, `/api/auth/customers/**`, `/api/customers/**`,
+> `/api/notifications/customers/**` et les lectures publiques de la vitrine.
+> Toute autre route (admin, POS, livreur, staff) lève
+> `OUT_OF_SCOPE_ENDPOINT` **avant** l'appel réseau. Aucune clé API n'est
+> supportée : le seul identifiant est le cookie client.
+
+### 🔒 Garanties de sécurité
+
+| Contrôle | Comportement par défaut |
+|---|---|
+| Jetons | Cookies `HttpOnly` gérés par le backend ; **aucun jeton écrit dans `localStorage`** (`storageType` par défaut : `memory`) |
+| `baseUrl` | Seuls `https://…` et les chemins `/…` sont acceptés ; `javascript:`, `data:`, `file:`, `//evil.com` et `user:pass@host` sont rejetés |
+| CSRF | Double-submit automatique : cookie `XSRF-TOKEN` → en-tête `X-XSRF-TOKEN` sur les mutations |
+| Périmètre | Allowlist storefront dans le transport : admin/POS/livreur/staff refusés **avant** tout appel réseau (`OUT_OF_SCOPE_ENDPOINT`) |
+| Réponses | Une réponse 2xx non-JSON est rejetée (`INVALID_RESPONSE`) au lieu d'être typée en succès |
+| Erreurs | Corps d'erreur borné (8 Ko) et champs de pollution de prototype filtrés |
+| Déconnexion | Annule un rafraîchissement en vol : une session fermée ne peut pas être ressuscitée |
+| Polling | Borné en durée (30 min) et en erreurs consécutives (5) |
 
 ### 3. Prompt Lovable prêt à l'emploi (1-Shot)
 Deux formats de prompt sont disponibles et prêts à copier-coller directement :
@@ -60,39 +83,18 @@ Collez ce prompt directement dans Lovable / v0 / Bolt pour générer toute l'app
 
 ---
 
-## 🚀 Déploiement en 1 Clic sur Vercel ou Netlify
-
-Le projet généré est nativement optimisé pour un déploiement instantané sur **Vercel** et **Netlify** :
-
-### A. Déploiement Vercel
-1. Directement depuis Lovable.dev : cliquez sur **"Publish"** puis exportez vers GitHub.
-2. Sur [Vercel](https://vercel.com/new), importez le dépôt.
-3. Le fichier pré-configuré [`vercel.json`](./vercel.json) gère automatiquement les réécritures SPA (évite les erreurs 404 lors du rafraîchissement d'une sous-page `/menu` ou `/tracking`) et les headers de sécurité HTTP.
-4. Renseignez vos variables d'environnement (`VITE_RESTORINO_API_URL`, `VITE_RESTAURANT_ID`, `VITE_TENANT_ID`, `VITE_RESTORINO_API_KEY`) et cliquez sur **Deploy**.
-
-### B. Déploiement Netlify
-1. Directement depuis Lovable.dev : cliquez sur le bouton natif **"Deploy to Netlify"** ou connectez votre repo GitHub sur [Netlify](https://app.netlify.com/start).
-2. Le fichier pré-configuré [`netlify.toml`](./netlify.toml) assure automatiquement :
-   - Commande de build : `npm run build`
-   - Dossier de publication : `dist`
-   - Redirections SPA 200 (`/* -> /index.html 200`)
-   - En-têtes de sécurité HTTP stricts.
-3. Configurez vos variables d'environnement dans le panneau Netlify et déployez en 1 clic.
-
----
-
-## 📦 Architecture des Modules
+##  Architecture des Modules
 
 | Module | Namespace | Description | Authentification requise ? |
 | :--- | :--- | :--- | :--- |
 | **Vitrine & Menus** | `api.vitrine.*` | Découverte resto, carte des menus, plats, catégories, horaires | ❌ Non (Public) |
-| **Commandes Publiques** | `api.orders.*` | Validation panier, estimation livraison, calcul promo, réservation | ❌ Non (Public) |
+| **Commandes Publiques** | `api.orders.*` | Estimation livraison, réservation, suivi | ❌ Non (Public) |
 | **Suivi Livreur** | `api.delivery.*` | Suivi GPS et statut de livraison par numéro de tracking | ❌ Non (Public) |
 | **Commande à Table (QR)** | `api.tables.*` | Scan QR code de table pour commande sur place | ❌ Non (Public) |
 | **Agent Vocal & Chat (AI)** | `api.liveAgent.*` | Conseiller culinaire interactif en temps réel (Gemini Live) | ❌ Non (Public) |
 | **Auth Client** | `api.auth.*` | Inscription, connexion, mot de passe oublié, vérification email | ❌ Non / 🔐 Oui |
-| **Espace Client** | `api.customer.*` | Profil, historique commandes, notation des plats, parrainage | 🔐 Oui (Token JWT) |
-| **Fidélité** | `api.loyalty.*` | Points, paliers, catalogue récompenses, points avis Google | 🔐 Oui (Token JWT) |
+| **Espace Client** | `api.customer.*` | Profil, historique commandes, notation des plats, parrainage | 🔐 Cookie client (HttpOnly) |
+| **Fidélité** | `api.loyalty.*` | Points, paliers, catalogue récompenses, points avis Google | 🔐 Cookie client (HttpOnly) |
 
 ---
 
@@ -189,18 +191,30 @@ session.sendText('Quels sont vos plats sans gluten ?');
 ## 🔨 Commandes de Build & Test
 
 ```bash
-# Compilation TypeScript vers dist/
+# Compilation TypeScript (double build : CJS dans dist/, ESM dans dist/esm/)
 npm run build
 
-# Exécution des tests automatisés (15 tests natifs Node.js)
+# Type-check des sources et de l'exemple de référence
+npm run typecheck && npm run typecheck:examples
+
+# Suite complète : client + contrat backend + sécurité + docs + packaging
 npm test
+
+# Rafraîchir le snapshot de contrat depuis l'OpenAPI du backend
+npm run contract:snapshot -- --url http://localhost:8080/v3/api-docs
 
 # Régénération du bundle standalone mono-fichier (Lovable.dev / v0)
 npm run bundle:single
 
-# Cycle complet pré-publication
-npm run prepublishOnly
+# Vérification du paquet avant publication
+npm pack --dry-run
 ```
+
+### Implémentation de référence
+
+[`examples/vanilla/`](./examples/vanilla) contient un tunnel de commande
+complet et typé (menu → panier → checkout → suivi) : `npm run typecheck:examples`
+vérifie qu'il compile, et il constitue le squelette à copier pour une app générée.
 
 ---
 

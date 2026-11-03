@@ -1,16 +1,16 @@
-import { HttpClient } from '../http/http-client';
+import { HttpClient, RestorinoApiError } from '../http/http-client';
 import {
   PublicVitrineResponse,
   RestaurantSearchRequest,
+  RestaurantSearchResponse,
+  RestaurantReviewsResponse,
   PublicMenuResponse,
   PublicCategory,
   PublicProduct,
   DeliveryZoneCheckResponse,
   RestaurantStatusResponse,
   SeoMetaTagsResponse,
-  ValidateApiKeyResponse,
   VitrineConfigResponse,
-  TemplateResponse,
   DomainResolutionResponse
 } from '../types/vitrine';
 import { TestimonialResponse } from '../types/customer';
@@ -19,11 +19,39 @@ import { Page } from '../types/common';
 export class VitrineModule {
   constructor(private http: HttpClient) {}
 
+  private resolveIdentifier(override?: string): string {
+    const target = override || this.http.getConfig().restaurantId;
+    if (!target) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId est requis : fournissez-le à la configuration du client ou à l’appel.',
+        'MISSING_RESTAURANT_ID'
+      );
+    }
+    return target;
+  }
+
+  /**
+   * Identifiant de vitrine (tenant, slug ou restaurant) obligatoire : sans lui
+   * le chemin contient un segment vide et échoue en 404 opaque.
+   */
+  private resolveTenantTarget(override?: string): string {
+    const target = override || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
+    if (!target) {
+      throw new RestorinoApiError(
+        400,
+        'tenantId (ou restaurantId) est requis pour identifier la vitrine.',
+        'MISSING_TENANT_ID'
+      );
+    }
+    return target;
+  }
+
   /**
    * Recherche multicritère de restaurants (proximité GPS, spécialité, ville).
    */
-  public async search(filter: RestaurantSearchRequest): Promise<Page<PublicVitrineResponse>> {
-    return this.http.request<Page<PublicVitrineResponse>>('/api/public/restaurants/search', {
+  public async search(filter: RestaurantSearchRequest): Promise<Page<RestaurantSearchResponse>> {
+    return this.http.request<Page<RestaurantSearchResponse>>('/api/public/restaurants/search', {
       method: 'POST',
       body: filter
     });
@@ -32,8 +60,8 @@ export class VitrineModule {
   /**
    * Liste des restaurants les plus populaires de la plateforme.
    */
-  public async getPopular(): Promise<PublicVitrineResponse[]> {
-    return this.http.request<PublicVitrineResponse[]>('/api/public/restaurants/popular', {
+  public async getPopular(): Promise<RestaurantSearchResponse[]> {
+    return this.http.request<RestaurantSearchResponse[]>('/api/public/restaurants/popular', {
       method: 'GET'
     });
   }
@@ -59,12 +87,13 @@ export class VitrineModule {
 
   /**
    * Vérifie si des coordonnées GPS se situent dans la zone de livraison du restaurant.
+   * Le backend attend `latitude` / `longitude` (les noms `lat`/`lng` produisaient un 400).
    */
   public async checkDeliveryZone(latitude: number, longitude: number, restaurantId?: string): Promise<DeliveryZoneCheckResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<DeliveryZoneCheckResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/delivery-check`, {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<DeliveryZoneCheckResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/delivery-check`, {
       method: 'GET',
-      params: { lat: latitude, lng: longitude }
+      params: { latitude, longitude }
     });
   }
 
@@ -72,18 +101,20 @@ export class VitrineModule {
    * Statut d'ouverture temps réel du restaurant.
    */
   public async getStatus(restaurantId?: string): Promise<RestaurantStatusResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<RestaurantStatusResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/status`, {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<RestaurantStatusResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/status`, {
       method: 'GET'
     });
   }
 
   /**
    * Avis clients publics du restaurant.
+   * Le backend renvoie un objet `{reviews, totalReviews, averageRating, ...}`,
+   * pas une `Page` Spring.
    */
-  public async getReviews(restaurantId?: string, page = 0, size = 10): Promise<Page<TestimonialResponse>> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<Page<TestimonialResponse>>(`/api/public/restaurants/${encodeURIComponent(target || '')}/reviews`, {
+  public async getReviews(restaurantId?: string, page = 0, size = 10): Promise<RestaurantReviewsResponse> {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<RestaurantReviewsResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/reviews`, {
       method: 'GET',
       params: { page, size }
     });
@@ -93,8 +124,8 @@ export class VitrineModule {
    * Carte / Menu public complet du restaurant.
    */
   public async getMenu(restaurantId?: string): Promise<PublicMenuResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<PublicMenuResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/menu`, {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<PublicMenuResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/menu`, {
       method: 'GET'
     });
   }
@@ -103,8 +134,8 @@ export class VitrineModule {
    * Récupère une catégorie et ses plats par slug SEO (ex: 'burgers').
    */
   public async getCategoryBySlug(categorySlug: string, tenantOrSlug?: string): Promise<PublicCategory> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<PublicCategory>(`/api/public/menu/${encodeURIComponent(tenant || '')}/${encodeURIComponent(categorySlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<PublicCategory>(`/api/public/menu/${encodeURIComponent(tenant)}/${encodeURIComponent(categorySlug)}`, {
       method: 'GET'
     });
   }
@@ -113,8 +144,8 @@ export class VitrineModule {
    * Récupère la fiche détaillée d'un plat par slug SEO (ex: 'double-cheese-burger').
    */
   public async getProductBySlug(categorySlug: string, productSlug: string, tenantOrSlug?: string): Promise<PublicProduct> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<PublicProduct>(`/api/public/menu/${encodeURIComponent(tenant || '')}/${encodeURIComponent(categorySlug)}/${encodeURIComponent(productSlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<PublicProduct>(`/api/public/menu/${encodeURIComponent(tenant)}/${encodeURIComponent(categorySlug)}/${encodeURIComponent(productSlug)}`, {
       method: 'GET'
     });
   }
@@ -123,8 +154,8 @@ export class VitrineModule {
    * Récupère les métadonnées SEO pour l'accueil de la vitrine.
    */
   public async getSeoMeta(tenantOrSlug?: string): Promise<SeoMetaTagsResponse> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant || '')}/meta`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant)}/meta`, {
       method: 'GET'
     });
   }
@@ -133,8 +164,8 @@ export class VitrineModule {
    * Métadonnées SEO d'une catégorie du menu (par slug).
    */
   public async getCategorySeoMeta(categorySlug: string, tenantOrSlug?: string): Promise<SeoMetaTagsResponse> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant || '')}/meta/category/${encodeURIComponent(categorySlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant)}/meta/category/${encodeURIComponent(categorySlug)}`, {
       method: 'GET'
     });
   }
@@ -143,8 +174,8 @@ export class VitrineModule {
    * Métadonnées SEO d'un produit du menu (par slug).
    */
   public async getProductSeoMeta(productSlug: string, tenantOrSlug?: string): Promise<SeoMetaTagsResponse> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant || '')}/meta/product/${encodeURIComponent(productSlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant)}/meta/product/${encodeURIComponent(productSlug)}`, {
       method: 'GET'
     });
   }
@@ -161,80 +192,52 @@ export class VitrineModule {
 
   /**
    * Récupère les témoignages validés par identifiant UUID du restaurant.
+   * Le backend renvoie une `Page` Spring, pas un tableau.
    */
-  public async getTestimonials(restaurantId?: string): Promise<TestimonialResponse[]> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<TestimonialResponse[]>(`/api/public/testimonials/${encodeURIComponent(target || '')}`, {
-      method: 'GET'
-    });
-  }
-
-  /**
-   * Valide la clé API Vitrine via le backend Restorino (POST /api/vitrine/api-keys/validate).
-   * Vérifie la validité, l'expiration, l'état actif et les permissions (READ, WRITE, etc.).
-   */
-  public async validateApiKey(apiKey?: string): Promise<ValidateApiKeyResponse> {
-    const key = apiKey || this.http.getConfig().apiKey;
-    const customHeaders: Record<string, string> = {};
-    if (apiKey && apiKey !== this.http.getConfig().apiKey) {
-      customHeaders['X-API-Key'] = apiKey;
-    }
-    return this.http.request<ValidateApiKeyResponse>('/api/vitrine/api-keys/validate', {
-      method: 'POST',
-      body: key ? { apiKey: key } : undefined,
-      headers: Object.keys(customHeaders).length > 0 ? customHeaders : undefined,
-      skipAuthRefresh: true,
-      retries: 0
-    });
-  }
-
-  /**
-   * Récupère la configuration vitrine complète authentifiée par clé API (GET /api/vitrine/{tenantId}/config).
-   * L'en-tête X-API-Key est obligatoire pour les applications storefront externes (Lovable, React, Next.js).
-   */
-  public async getConfig(tenantIdOrSubdomain?: string): Promise<VitrineConfigResponse> {
-    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
-    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target || '')}/config`, {
-      method: 'GET'
+  public async getTestimonials(restaurantId?: string, page = 0, size = 10): Promise<Page<TestimonialResponse>> {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<Page<TestimonialResponse>>(`/api/public/testimonials/${encodeURIComponent(target)}`, {
+      method: 'GET',
+      params: { page, size }
     });
   }
 
   /**
    * Récupère la configuration vitrine publique publiée (GET /api/vitrine/{tenantIdOrSubdomain}/public).
-   * Endpoint public direct sans clé API requise.
+   * Endpoint public direct, sans clé API ni session.
    */
   public async getPublicConfig(tenantIdOrSubdomain?: string): Promise<VitrineConfigResponse> {
-    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
-    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target || '')}/public`, {
+    const target = this.resolveTenantTarget(tenantIdOrSubdomain);
+    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target)}/public`, {
       method: 'GET'
     });
   }
 
   /**
-   * Liste des templates de vitrine disponibles (GET /api/vitrine/templates).
-   */
-  public async getTemplates(): Promise<TemplateResponse[]> {
-    return this.http.request<TemplateResponse[]>('/api/vitrine/templates', {
-      method: 'GET'
-    });
-  }
-
-  /**
-   * Résout un nom de domaine ou sous-domaine vers son tenantId (GET /api/vitrine/resolve-domain?domain=...).
+   * Résout un nom de domaine ou sous-domaine vers son tenantId.
+   * Le backend répond 404 pour un domaine inconnu : on le traduit en
+   * `{ found: false }` plutôt que de lever une exception.
    */
   public async resolveCustomDomain(domain: string): Promise<DomainResolutionResponse> {
-    return this.http.request<DomainResolutionResponse>('/api/vitrine/resolve-domain', {
-      method: 'GET',
-      params: { domain }
-    });
+    try {
+      return await this.http.request<DomainResolutionResponse>('/api/vitrine/resolve-domain', {
+        method: 'GET',
+        params: { domain }
+      });
+    } catch (err) {
+      if (err instanceof RestorinoApiError && err.status === 404) {
+        return { found: false, domain };
+      }
+      throw err;
+    }
   }
 
   /**
    * Récupère le bundle JSON-LD Schema.org (@graph) officiel du site vitrine pour Google Rich Results.
    */
   public async getSchemaOrg(tenantIdOrSubdomain?: string): Promise<Record<string, any>> {
-    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
-    return this.http.request<Record<string, any>>(`/api/vitrine/${encodeURIComponent(target || '')}/schema.json`, {
+    const target = this.resolveTenantTarget(tenantIdOrSubdomain);
+    return this.http.request<Record<string, any>>(`/api/vitrine/${encodeURIComponent(target)}/schema.json`, {
       method: 'GET'
     });
   }

@@ -1,4 +1,4 @@
-import { HttpClient } from '../http/http-client';
+import { HttpClient, RestorinoApiError } from '../http/http-client';
 import {
   CustomerLoginRequest,
   CustomerRegisterRequest,
@@ -15,19 +15,43 @@ export class AuthModule {
   constructor(private http: HttpClient) {}
 
   /**
+   * `restaurantId` est `@NotBlank` côté backend : échouer localement avec un
+   * message clair évite de transformer une erreur de configuration en 400 opaque.
+   */
+  private resolveRestaurantId(override?: string): string {
+    const restaurantId = override || this.http.getConfig().restaurantId;
+    if (!restaurantId) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId est requis : fournissez-le à la configuration du client ou à l’appel.',
+        'MISSING_RESTAURANT_ID'
+      );
+    }
+    return restaurantId;
+  }
+
+  /**
+   * En mode cookies (défaut) le backend ne renvoie aucun token dans le corps :
+   * son absence n'est pas un échec. On ne stocke que si un jeton est présent
+   * (compatibilité avec les backends en mode Bearer).
+   */
+  private adoptSession(response?: CustomerAuthResponse | null): void {
+    if (response && response.token) {
+      this.http.setAuthTokens(response.token, response.refreshToken ?? undefined);
+    }
+  }
+
+  /**
    * Connexion d'un compte client (Email + Mot de passe).
    */
   public async login(data: CustomerLoginRequest): Promise<CustomerAuthResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     const response = await this.http.request<CustomerAuthResponse>('/api/auth/customers/login', {
       method: 'POST',
       body: { ...data, restaurantId }
     });
 
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken);
-    }
-
+    this.adoptSession(response);
     return response;
   }
 
@@ -35,16 +59,13 @@ export class AuthModule {
    * Inscription d'un nouveau compte client pour le restaurant.
    */
   public async register(data: CustomerRegisterRequest): Promise<CustomerAuthResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     const response = await this.http.request<CustomerAuthResponse>('/api/auth/customers/register', {
       method: 'POST',
       body: { ...data, restaurantId }
     });
 
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken);
-    }
-
+    this.adoptSession(response);
     return response;
   }
 
@@ -52,37 +73,43 @@ export class AuthModule {
    * Connexion ou auto-inscription d'un client via Google Sign-In (Token ID Google).
    */
   public async loginWithGoogle(data: CustomerGoogleAuthRequest): Promise<CustomerAuthResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     const response = await this.http.request<CustomerAuthResponse>('/api/auth/customers/google', {
       method: 'POST',
       body: { ...data, restaurantId }
     });
 
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken);
-    }
-
+    this.adoptSession(response);
     return response;
   }
 
   /**
-   * Rafraîchissement explicite du token d'authentification client.
+   * Rafraîchissement explicite de la session client.
+   *
+   * Délègue au transport : le backend renouvelle à partir des cookies HttpOnly
+   * et répond `{ success: true }` sans token. Le paramètre n'est conservé que
+   * pour les backends exigeant un refresh token dans le corps.
    */
   public async refreshToken(refreshToken?: string): Promise<CustomerRefreshTokenResponse> {
-    const tokenToRefresh = refreshToken || this.http.getRefreshToken();
-    const response = await this.http.request<CustomerRefreshTokenResponse>('/api/auth/refresh', {
-      method: 'POST',
-      body: tokenToRefresh ? { refreshToken: tokenToRefresh } : undefined,
-      headers: tokenToRefresh ? { 'x-refresh-token': tokenToRefresh } : {},
-      skipAuthRefresh: true,
-      retries: 0
-    });
-
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken || tokenToRefresh);
+    const previousRefreshToken = refreshToken || this.http.getRefreshToken();
+    if (previousRefreshToken && !this.http.getRefreshToken()) {
+      this.http.setRefreshToken(previousRefreshToken);
     }
 
-    return response;
+    const refreshed = await this.http.tryRefreshToken();
+    if (!refreshed) {
+      throw new RestorinoApiError(
+        401,
+        'Session expirée : impossible de rafraîchir le jeton.',
+        'REFRESH_FAILED'
+      );
+    }
+
+    return {
+      success: true,
+      token: this.http.getToken() ?? undefined,
+      refreshToken: this.http.getRefreshToken() ?? undefined
+    };
   }
 
   /**
@@ -147,7 +174,7 @@ export class AuthModule {
    * Demande de réinitialisation de mot de passe (Anti-énumération).
    */
   public async requestPasswordReset(email: string, restaurantId?: string): Promise<MessageResponse> {
-    const targetRestaurantId = restaurantId || this.http.getConfig().restaurantId;
+    const targetRestaurantId = this.resolveRestaurantId(restaurantId);
     return this.http.request<MessageResponse>('/api/customers/password/reset-request', {
       method: 'POST',
       body: { email, restaurantId: targetRestaurantId } as PasswordResetRequest
@@ -155,10 +182,10 @@ export class AuthModule {
   }
 
   /**
-   * Confirmation de réinitialisation de mot de passe avec code OTP / token.
+   * Confirmation de réinitialisation de mot de passe avec le code OTP à 6 chiffres.
    */
   public async confirmPasswordReset(data: PasswordResetConfirmRequest): Promise<MessageResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     return this.http.request<MessageResponse>('/api/customers/password/reset-confirm', {
       method: 'POST',
       body: { ...data, restaurantId }

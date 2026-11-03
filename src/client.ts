@@ -96,19 +96,6 @@ export class RestorinoClient {
     return this.http.getRefreshToken();
   }
 
-  /**
-   * Récupère la clé API Vitrine actuellement configurée.
-   */
-  public getApiKey(): string | null {
-    return this.http.getApiKey();
-  }
-
-  /**
-   * Définit dynamiquement la clé API Vitrine.
-   */
-  public setApiKey(apiKey: string | null): void {
-    this.http.setApiKey(apiKey);
-  }
 
   /**
    * Définit manuellement le token JWT client (et optionnellement son refresh token).
@@ -126,13 +113,17 @@ export class RestorinoClient {
 
   /**
    * Définit simultanément le token d'accès et le refresh token.
+   * Omettre `refreshToken` conserve celui déjà stocké.
    */
-  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+  public setAuthTokens(token: string | null, refreshToken?: string | null): void {
     this.http.setAuthTokens(token, refreshToken);
   }
 
   /**
-   * Vérifie si un token client est présent.
+   * Vrai si un JWT est mémorisé côté client.
+   *
+   * En mode cookies (défaut), l'absence de token local ne signifie **pas** que
+   * la session est fermée : appeler `auth.getMe()` pour connaître l'état réel.
    */
   public isAuthenticated(): boolean {
     return !!this.http.getToken();
@@ -169,7 +160,7 @@ export class RestorinoClient {
   /**
    * Vérifie les conflits d'allergènes entre un plat et les allergies du client.
    */
-  public checkAllergens(dishAllergens: string[], customerAllergens: string[]) {
+  public checkAllergens(dishAllergens: string[] | string, customerAllergens: string[]) {
     return checkAllergensConflict(dishAllergens, customerAllergens);
   }
 }

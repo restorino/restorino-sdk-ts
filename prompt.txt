@@ -1,218 +1,206 @@
-# ==============================================================================
-# 🍽️ RESTORINO x LOVABLE.DEV — MASTER 1-SHOT STOREFRONT PROMPT (.TXT)
-# ==============================================================================
-# Quick Start for Developers & Designers:
-# 1. In your Lovable.dev / v0 / Bolt project, create `src/lib/restorino-sdk.ts` 
-#    and paste the contents of `dist-bundle/restorino-sdk.ts`.
-# 2. Create `src/lib/api.ts` initialized with `RestorinoClient`.
-# 3. Add your environment variables in `.env`:
-#      VITE_RESTORINO_API_URL=http://localhost:8080
-#      VITE_RESTAURANT_ID=00000000-0000-0000-0000-000000000001
-#      VITE_TENANT_ID=00000000-0000-0000-0000-000000000001
-#      VITE_RESTORINO_API_KEY=vit_live_... (Optional)
-# 4. Copy everything below and paste it into the Lovable AI chat in 1-SHOT!
-# ==============================================================================
+RESTORINO SDK — ONE-SHOT FRONTEND BUILD PROMPT
+Paste this file plus `LOVABLE_PROMPT.md` into Lovable / v0 / Bolt / Cursor.
+Follow it literally. Do not invent methods.
 
-You are an expert Principal Frontend Engineer and World-Class UI/UX Designer. Build a complete, production-grade, responsive Restaurant Storefront & Customer Portal web application for "Le Bistrot Restorino" in React, TypeScript, Tailwind CSS, Lucide Icons, and shadcn/ui components.
+────────────────────────────────────────────────────────────────────────────
+OBJECTIVE
+────────────────────────────────────────────────────────────────────────────
+Build a production-quality restaurant storefront + customer account SPA using
+`@restorino/sdk`. French UI copy, responsive, accessible, no placeholder lorem.
 
-The entire frontend must be built and functional in 1 shot: complete with dynamic menu browsing, dish customization modal, cart drawer, 3-mode checkout (Delivery, Takeaway, Dine-in QR), real-time order tracking with live courier GPS, online table booking, customer authentication, loyalty points & rewards redemption, customer reviews, and an interactive culinary voice assistant (Gemini Live).
+────────────────────────────────────────────────────────────────────────────
+1. INSTALL & INIT (exact)
+────────────────────────────────────────────────────────────────────────────
+npm install @restorino/sdk
 
-================================================================================
-1. BACKEND & DATA LAYER INTEGRATION (NO MOCK DATA)
-================================================================================
-The backend is already implemented and exposed via a unified local TypeScript SDK located at `@/lib/api` (an instance of `RestorinoClient`).
-DO NOT mock network calls. Always import `api` from `@/lib/api` to fetch and mutate real data.
+// src/lib/api.ts
+import { RestorinoClient } from '@restorino/sdk';
 
-The SDK exposes 7 specialized modules:
+export const api = new RestorinoClient({
+  baseUrl: import.meta.env.VITE_RESTORINO_API_URL ?? '',
+  restaurantId: import.meta.env.VITE_RESTAURANT_ID, // restaurant UUID
+  credentials: 'include',                            // REQUIRED (cookie auth)
+  retries: 2,
+  onTokenExpired: () => { window.location.href = '/login?expired=true'; },
+});
 
-1. `api.vitrine`:
-   - `getRestaurant(id?)`: Restaurant profile, logo, cover banner, description, cuisines, opening hours, currencies.
-   - `getMenu(id?)`: Full menu with categories, products, allergens, supplements, garnishes, sizes.
-   - `checkDeliveryZone(lat, lng)`: Real-time GPS eligibility verification for home delivery.
-   - `getStatus(id?)`: Live restaurant status badge (Open / Closed, current shift).
-   - `getReviews(id?, page, size)`: Verified public customer testimonials and ratings.
-   - `search(filter)`: Multi-criteria restaurant search by GPS, cuisine, city.
-   - `getCategoryBySlug(slug)`: Category by SEO slug.
-   - `getProductBySlug(categorySlug, productSlug)`: Dish by SEO slug.
-   - `getSeoMeta()`: Homepage SEO meta tags.
-   - `getTestimonialsBySubdomain(subdomain)`: Verified reviews by vitrine subdomain.
-   - `getTestimonials(restaurantId)`: Verified reviews by restaurant ID.
-   - `validateApiKey()`: Validates storefront API key permissions and active status.
-   - `getConfig()`: Full vitrine configuration, brand colors and custom sections.
-   - `getPublicConfig()`: Public published vitrine configuration.
-   - `getSchemaOrg()`: Official JSON-LD Schema.org rich-snippet bundle for Google search.
+env:
+  VITE_RESTORINO_API_URL=https://api.restorino.com
+  VITE_RESTAURANT_ID=<restaurant-uuid>
 
-2. `api.orders`:
-   - `placeOrder(orderPayload)`: Place public order (supports DELIVERY, TAKEAWAY, and DINE_IN).
-   - `estimateDelivery(customerLocation)`: Calculates real-time delivery fee and ETA in minutes.
-   - `trackOrder(orderId, { customerEmail, customerPhone })`: Real-time order preparation status with 2-factor anti-IDOR security.
-   - `trackOrderByToken(token)`: One-click tracking via signed SMS/email link.
-   - `getOrderingMenu()`: Menu items optimized for checkout.
-   - `getSettings()`: Public restaurant settings (tax rate, currency, accent colors).
-   - `cancelOrder(orderId, { customerEmail, customerPhone, reason })`: Cancel pending order with verification.
-   - `createReservation(reservation)`: Book a table online with date, time, party size, notes.
-   - `trackReservation(reservationNumber, { customerEmail, customerPhone })`: Track table reservation status.
-   - `cancelReservation(reservationNumber, { customerEmail, customerPhone, reason })`: Cancel a table reservation.
+────────────────────────────────────────────────────────────────────────────
+2. NON-NEGOTIABLE RULES
+────────────────────────────────────────────────────────────────────────────
+R1. Auth is COOKIE-BASED. login()/register() return { customer, loyalty } and
+    NO token. Never read response.token. Check the session with api.auth.getMe().
+R2. Never persist tokens: do NOT set storageType to 'localStorage'.
+R3. No API key exists in this SDK. The only credential is the customer cookie.
+R4. Never send `total`/`tax` when creating an order — the server recomputes.
+R5. restaurantId is a UUID. A slug is only accepted by getRestaurant,
+    getCategoryBySlug, getProductBySlug, getSeoMeta*, getPublicConfig,
+    getSchemaOrg.
+R6. Money = number. Dates = ISO strings. Create-reservation date = ISO datetime
+    without trailing Z, e.g. '2026-12-24T20:30:00'.
+R7. Only call the methods listed in §3. Nothing else exists.
+R8. STOREFRONT SCOPE: only /api/public/**, /api/auth/customers/**,
+    /api/customers/**, /api/notifications/customers/** and public vitrine reads.
+    Anything else throws OUT_OF_SCOPE_ENDPOINT (admin, POS, driver, staff).
 
-3. `api.delivery`:
-   - `track(trackingNumber)`: Public courier live tracking (status, driver name, masked phone, live GPS coordinates, ETA).
+────────────────────────────────────────────────────────────────────────────
+3. API SURFACE (complete)
+────────────────────────────────────────────────────────────────────────────
+api.auth
+  login({email,password,restaurantId?}) register({email,password,firstName,
+    lastName,phone,restaurantId?,referralCode?}) loginWithGoogle({googleToken})
+  refreshToken(rt?) logout() getMe()
+  changePassword({currentPassword,newPassword,confirmPassword})
+  requestEmailVerification() verifyEmail(token)
+  requestPasswordReset(email,restaurantId?)
+  confirmPasswordReset({email,resetCode,newPassword,restaurantId?})
 
-4. `api.tables`:
-   - `getTableInfo(tableId)`: Table number, capacity, zone, and active session from QR code for contactless dine-in ordering.
+api.vitrine
+  search({searchTerm?,cuisineType?,city?,latitude?,longitude?,radiusKm?})
+  getPopular() getCuisines() getRestaurant(idOrSlug?)
+  checkDeliveryZone(latitude,longitude,restaurantId?)
+  getStatus(restaurantId?) getReviews(restaurantId?,page?,size?) getMenu(restaurantId?)
+  getCategoryBySlug(slug,tenant?) getProductBySlug(catSlug,prodSlug,tenant?)
+  getSeoMeta(tenant?) getCategorySeoMeta(slug,tenant?) getProductSeoMeta(slug,tenant?)
+  getTestimonialsBySubdomain(subdomain,page?,size?) getTestimonials(restaurantId?,page?,size?)
+  getPublicConfig(tenant?) resolveCustomDomain(domain) getSchemaOrg(tenant?)
 
-5. `api.liveAgent`:
-   - `connect({ restaurantSlug, onTranscript, onAudio, onClientAction, onStatusChange, onInterrupted })`: Interactive bidirectional voice/chat culinary assistant powered by Gemini Live. Supports voice ordering (`ADD_TO_CART` client actions) and personalized dish recommendations.
-   - Session supports typed EventEmitter: `session.on('transcript', cb)`, `session.on('action', cb)`, `session.on('audio', cb)`.
+api.orders
+  placeOrder(payload,restaurantId?) estimateDelivery({latitude,longitude,address,
+    preferredTime?,orderValue?},restaurantId?)
+  trackOrder(orderId,{customerEmail,customerPhone},restaurantId?)
+  cancelOrder(orderId,{customerEmail,customerPhone,reason?},restaurantId?)
+  trackOrderByToken(token,restaurantId?) getOrderingMenu(restaurantId?)
+  getSettings(restaurantId?)
+  createReservation({customerName,customerPhone,customerEmail,numberOfGuests,
+    reservationDate,specialRequests?,tableNumber?,customerLatitude?,
+    customerLongitude?},restaurantId?)
+  trackReservation(number,{customerEmail,customerPhone},restaurantId?)
+  cancelReservation(number,{customerEmail,customerPhone,reason?},restaurantId?)
+  watchOrder(orderId,{customerEmail,customerPhone},cb,{intervalMs?,onError?})
 
-6. `api.auth`:
-   - `login({ email, password })`: Authenticates customer, stores JWT & refresh token automatically.
-   - `loginWithGoogle({ googleToken })`: Google Sign-In authentication and instant account creation.
-   - `register({ email, password, firstName, lastName, phone, referralCode })`: New customer registration.
-   - `refreshToken()`: Refreshes access token (also handled automatically on 401).
-   - `getMe()`: Current customer session info & loyalty tier summary.
-   - `logout()`: Clears local session and revokes server tokens.
-   - `changePassword({ currentPassword, newPassword })`: Updates password.
-   - `requestEmailVerification()`, `verifyEmail(token)`: Email verification flow.
-   - `requestPasswordReset(email)`, `confirmPasswordReset(data)`: Secure password recovery.
+api.tables
+  getTableInfo(tableIdUuid,restaurantId?)
 
-7. `api.customer`:
-   - `getProfile()`, `updateProfile(data)`: Customer profile details.
-   - `getOrders(page, size)`: Order history with instant re-order and rating modal.
-   - `getOrderDetails(orderId)`: Detailed breakdown of past order.
-   - `rateOrder(orderId, rating)`: 1 to 5 stars for food quality, delivery speed, service + review text.
-   - `getReferrals()`: Referral dashboard, unique shareable link, list of referred friends, points earned.
-   - `applyReferralCode(code)`: Apply a friend's referral code.
-   - `validatePromoCode(code, cartAmount)`: Validate promo coupon and calculate discount.
-   - `getNotifications(page, size)`: Customer in-app inbox notifications.
-   - `getUnreadNotificationCount()`: Unread badge count.
-   - `markNotificationRead(id)`, `markAllNotificationsRead()`: Inbox read status.
-   - `submitTestimonial(data)`: Submit restaurant reviews.
-   - `getMyTestimonials()`: Customer's own reviews.
+api.customer
+  getProfile() updateProfile({firstName?,lastName?,phone?})
+  getOrders(page?,size?) getOrderDetails(orderId) rateOrder(orderId,{foodQualityRating,
+    deliverySpeedRating,serviceRating,reviewText?}) getMyRatings(page?,size?)
+  getReferralCode() applyReferralCode(code) getReferrals()
+  getNotifications(page?,size?) getUnreadNotificationCount()
+  markNotificationRead(id) markAllNotificationsRead()
+  getMenuCategories() getMenuProducts(categoryId?) getMenuProduct(productId)
+  getMenuSupplements(productId?) getMenuGarnishes(category?) getMenuBeverages(filters?)
+  submitTestimonial({rating,content}) getMyTestimonials()
+  validatePromoCode(promoCode,orderAmount)
 
-8. `api.loyalty`:
-   - `getStatus()`: Points balance, current tier (`BRONZE`, `SILVER`, `GOLD`, `PLATINUM`), progress percentage to the next tier.
-   - `getRewards()`: Catalog of redeemable rewards (free dishes, discounts).
-   - `redeemReward(rewardId)`: Exchange points for instant coupon code.
-   - `getGoogleReviewInfo()`: Reward points offered for leaving a Google review.
-   - `getGoogleReviewStatus()`: Check if customer is eligible to claim points for a review.
-   - `claimGoogleReview({ reviewerName, rating, reviewComment })`: Claim bonus loyalty points.
-   - `uploadGoogleReviewProof(file)`: Upload screenshot proof of Google review.
+api.loyalty
+  getStatus() getRewards() redeemReward(rewardId)
+  getGoogleReviewInfo(restaurantUuid) getGoogleReviewStatus()
+  claimGoogleReview({reviewerName,rating,reviewComment?,proofImageUrl?})
+  uploadGoogleReviewProof(file)
 
-================================================================================
-2. UI / UX DESIGN SYSTEM & AESTHETICS
-================================================================================
-- Theme: Ultra-modern, high-end gastronomic bistro design. Warm dark culinary tones (slate-950 background with warm amber `#f59e0b` and emerald `#10b981` accents) or clean warm ivory light mode.
-- Typography: Plus Jakarta Sans / Inter, clear visual hierarchy, generous line heights.
-- Components: shadcn/ui (Button, Dialog, Drawer, DropdownMenu, Tabs, Badge, Card, Avatar, Input, Separator, Toast via Sonner).
-- Animations: Micro-interactions with Framer Motion or smooth Tailwind transitions.
-- States: Skeleton loaders on data fetch, graceful error banners with retry buttons, empty states with clear CTAs.
-- Mobile First: Sticky mobile bottom bar with cart preview & total price; touch targets >= 44px.
+api.delivery
+  track(trackingNumber) watchDelivery(trackingNumber,cb,{intervalMs?,onError?})
 
-================================================================================
-3. CORE PAGES & USER FLOWS TO IMPLEMENT
-================================================================================
+api.liveAgent
+  connect({restaurantSlug,onTranscript?,onAudioMeta?,onAudio?,onClientAction?,
+           onStatusChange?,onInterrupted?,onSessionEnded?,onError?,onClose?})
+  → session.on/off/sendText/sendAudio/confirmAction(actionId)/interrupt/
+    getAudioMeta()/getStatus()/disconnect()
 
-1. HEADER & TOP NAVIGATION:
-   - Restaurant Name & Logo fetched from `api.vitrine.getRestaurant()`.
-   - Real-time Status Badge (🟢 Ouvert / 🔴 Fermé).
-   - Order Type Switcher (🛵 Livraison / 🥡 À emporter / 🍽️ Sur place).
-   - Live Search bar with instant autocomplete on dish names and tags.
-   - Cart Trigger button with item count pill and animated badge.
-   - Auth Button: "Se connecter" opening a modal OR Customer Avatar dropdown (Mon Profil, Mes Commandes, Ma Fidélité, Déconnexion) if logged in (`api.isAuthenticated()`).
+audio
+  createPcmPlayer({sampleRate?}) → enqueue(chunk) / updateSampleRate(rate) /
+  stop() / playing
 
-2. HERO SECTION & RESTAURANT BANNER:
-   - High-resolution hero banner with restaurant cover, slogan, address, phone, and rating summary (stars + total reviews).
-   - Quick Action Buttons: "Consulter la carte", "Réserver une table", "Parler au sommelier vocal IA".
+helpers: configure() getToken() isAuthenticated() logoutLocal() formatCurrency()
+formatDate() calculateCart(items,opts) checkAllergens(dish,list)
 
-3. INTERACTIVE MENU & CATEGORY TABS:
-   - Sticky category navigation bar with icons (e.g. Entrées, Plats Signature, Pizzas, Desserts, Boissons).
-   - Product Grid: Cards with food photography, title, description, price, tags (Végétarien, Épicé, Populaire), and "+" button.
-   - Dish Customization Modal:
-     - Portion / Size selector (e.g. Normale / Grande).
-     - Radio groups for garnishes.
-     - Checkboxes for paid supplements / extras with live price update.
-     - Allergen alert chips (Gluten, Lactose, Fruits à coque, etc.).
-     - Special notes textarea.
-     - "Ajouter au panier (X,XX €)" action button with subtle bounce animation.
+────────────────────────────────────────────────────────────────────────────
+4. ENUMS (exact)
+────────────────────────────────────────────────────────────────────────────
+deliveryMethod : 'delivery' | 'takeout' | 'dine-in'      (request, lowercase)
+orderType      : 'DELIVERY' | 'TAKEOUT' | 'DINE_IN'      (response, uppercase)
+paymentMethod  : 'card' | 'cash' | 'paypal' | 'stripe' | 'mobile'
+orderStatus    : PENDING CONFIRMED PREPARING READY OUT_FOR_DELIVERY DELIVERED
+                 COMPLETED CANCELLED REFUSED REFUNDED PENDING_VERIFICATION
+deliveryStatus : PENDING ASSIGNED PICKED_UP IN_TRANSIT DELIVERED FAILED CANCELLED
+reservation    : PENDING CONFIRMED CANCELLED COMPLETED NO_SHOW
+table          : AVAILABLE OCCUPIED RESERVED CLEANING BLOCKED MERGED
+rewardType     : DISCOUNT PERCENTAGE FREE_ITEM CASHBACK CUSTOM
 
-4. CART DRAWER & 3-MODE CHECKOUT:
-   - Slide-over cart drawer showing selected items, customized options, item count (+ / - buttons), and subtotal.
-   - Promo Code Input with instant check via `api.customer.validatePromoCode()`.
-   - 3-Mode Tab:
-     - 🛵 Livraison: Customer address, auto delivery fee estimation via `api.orders.estimateDelivery()`, floor/door code notes.
-     - 🥡 À emporter: Pickup time estimation, customer phone.
-     - 🍽️ Sur place (QR Code): Table number input or auto-populated from QR code URL param (`?table=12`).
-   - Payment Selector: Carte bancaire, Espèces, Titres restaurant.
-   - Submit Order: calls `api.orders.placeOrder()`, clears cart, and redirects to Live Tracking.
+PENDING_VERIFICATION = first-time cash order awaiting confirmation. Not an error.
 
-5. REAL-TIME ORDER & COURIER TRACKING:
-   - Progress Stepper: Confirmée -> En préparation -> Prête -> En livraison -> Livrée.
-   - Estimated Delivery Time countdown.
-   - Courier Live Card (when delivery mode): Driver name, masked phone number, and simulated live map pin using GPS coordinates from `api.delivery.track()`.
-   - Anti-IDOR security: Protected tracking lookup asking for email and phone verification.
+────────────────────────────────────────────────────────────────────────────
+5. ORDER PAYLOAD (copy shape exactly)
+────────────────────────────────────────────────────────────────────────────
+{
+  customerName, customerEmail, customerPhone,          // all required
+  deliveryMethod: 'delivery',
+  paymentMethod: 'cash',
+  customerLocation: { latitude, longitude, address },  // or deliveryAddress
+  items: [{
+    productId, productName,
+    quantity, unitPrice,
+    totalPrice,                                        // REQUIRED
+    supplements: [{ supplementId, supplementName, price, quantity }],
+    specialInstructions?,
+  }],
+  promoCode?, pointsToRedeem?, orderNotes?,
+  tableNumber? + tableToken?                           // dine-in
+}
 
-6. ONLINE TABLE RESERVATION MODAL:
-   - Date picker, service time slot selector (Midi: 12h-14h / Soir: 19h-22h), party size (1 to 12 persons).
-   - Special requests notes (e.g. anniversaire, terrasse, chaise haute).
-   - Instant confirmation via `api.orders.createReservation()` with reservation number and SMS confirmation notice.
+────────────────────────────────────────────────────────────────────────────
+6. FORBIDDEN NAMES (hallucination traps)
+────────────────────────────────────────────────────────────────────────────
+orderType (request)      → deliveryMethod
+'CASH' / 'CARD_ONLINE'   → 'cash' / 'card'
+deliveryLocation/street  → customerLocation/address
+totalAmount/subtotalAmount/discountAmount → total/subtotal/discount
+order.trackingToken      → parse from order.trackingUrl
+tracking.status          → deliveryStatus
+'ACCEPTED'/'OUT_FOR_DELIVERY' → 'ASSIGNED'/'IN_TRANSIT'
+restaurant.id            → restaurantId
+restaurant.cuisines[]    → cuisineType
+seo.ogImage              → seo.tags['og:image']
+reviews.content          → reviews.reviews
+rating.averageRating     → overallRating
+reward.pointsCost        → pointsRequired
+redemption.success       → HTTP 2xx
+testimonial.comment      → content
+notification.read/type/actionUrl → isRead/notificationType/actionButtonUrl
+table.tableNumber string → number
+partySize/reservationTime→ numberOfGuests / ISO reservationDate
+loyalty.getLoyaltyAccount() → loyalty.getStatus()
+orders.validatePromo()   → customer.validatePromoCode()
+confirmPasswordReset(token,pw) → confirmPasswordReset({email,resetCode,newPassword})
+login().token            → getMe()
 
-7. CUSTOMER PORTAL & LOYALTY DASHBOARD:
-   - Customer Auth Modal / Page: Tabbed Login / Register / Google Sign-In with automatic error alerts.
-   - Profile View: Name, email, phone, update button.
-   - Order History: List of past orders with status chips, date, item summary, invoice amount, and "Recommander en 1 clic" button.
-   - Rating Modal: Triggered after delivered orders (`api.customer.rateOrder()`).
-   - Loyalty Card:
-     - Dynamic gradient VIP card with tier (`BRONZE` / `SILVER` / `GOLD` / `PLATINUM`).
-     - Available points balance and animated progress bar to the next tier.
-     - Rewards Catalog: List of unlockable rewards (e.g. Boisson offerte: 100 pts, Dessert offert: 200 pts, Réduction 10€: 300 pts) with instant "Échanger" button.
-     - Google Review Reward Card: Instructions and upload button to claim 50 bonus points for leaving a 5-star Google review.
-   - Referrals Tab: Personal referral code with 1-click copy link and counter of invited friends.
+────────────────────────────────────────────────────────────────────────────
+7. DELIVERABLES
+────────────────────────────────────────────────────────────────────────────
+1. Menu page: categories → dishes, prices, allergens, add-to-cart with extras.
+2. Cart + checkout: delivery | takeout | dine-in; address or geolocation;
+   delivery estimate; promo code; order confirmation with orderNumber.
+3. Tracking page: order watch + courier map when delivery.
+4. Reservation form: guests, ISO datetime, GPS optional.
+5. Auth: login / register / Google; guarded routes via getMe(); logout.
+6. Account: profile, order history, ratings, notifications, referrals.
+7. Loyalty: points, tier, reward catalog, redeem, Google review claim.
+8. Optional voice agent with confirmAction() before applying cart changes.
+9. Error handling for 400/401/402/403/404/409/429 via RestorinoApiError;
+   show err.requestId when present.
+10. Optional: onRequest/onResponse hooks for logging (no headers, no query).
 
-8. VOICE ASSISTANT CULINARY ADVISOR (GEMINI LIVE):
-   - Floating mic button at the bottom-right ("Conseiller Culinaire IA").
-   - Expands to interactive voice/chat drawer powered by `api.liveAgent.connect()`.
-   - Real-time pulsing audio visualizer when speaking/listening.
-   - Handles commands like "Conseille-moi un plat sans gluten", "Quel vin s'accorde avec le risotto ?", "Ajoute deux tiramisus au panier" via `onClientAction`.
-
-================================================================================
-4. CODE ARCHITECTURE & FILE STRUCTURE
-================================================================================
-Organize the code cleanly:
-```
-src/
-├── lib/
-│   ├── api.ts                  # RestorinoClient instance
-│   └── restorino-sdk.ts        # Official Restorino SDK bundle
-├── stores/
-│   ├── cart-store.ts           # Zustand cart state with localStorage persistence
-│   └── customer-store.ts       # Logged-in customer & loyalty state
-├── components/
-│   ├── layout/
-│   │   ├── header.tsx          # Top navbar, search, status badge, cart trigger
-│   │   └── footer.tsx          # Contact info, opening hours, legal links
-│   ├── storefront/
-│   │   ├── hero-banner.tsx     # Restaurant presentation & quick actions
-│   │   ├── category-tabs.tsx   # Sticky category bar
-│   │   ├── product-card.tsx    # Dish card with image & quick-add
-│   │   ├── product-modal.tsx   # Dish customization modal (supplements, options)
-│   │   ├── live-agent-fab.tsx  # Floating culinary voice assistant widget
-│   │   └── table-booking-dialog.tsx # Online table reservation dialog
-│   ├── cart/
-│   │   ├── cart-drawer.tsx     # Slide-over cart drawer
-│   │   └── checkout-form.tsx   # Multi-mode checkout (Delivery/Takeaway/Dine-in)
-│   ├── tracking/
-│   │   ├── order-tracker.tsx   # Real-time order progress stepper
-│   │   └── courier-live-card.tsx # GPS courier map card
-│   └── customer/
-│       ├── auth-dialog.tsx     # Login / Register / Google Sign-in dialog
-│       ├── profile-view.tsx    # Customer profile editor
-│       ├── order-history.tsx   # Past orders with re-order & rating
-│       └── loyalty-card.tsx    # Tier progress bar, rewards catalog, Google review claim
-├── App.tsx                     # Main layout & routing
-├── vercel.json                 # Vercel 1-click deploy config with SPA rewrites & security headers
-└── netlify.toml                # Netlify 1-click deploy config with SPA redirects (/* -> /index.html 200)
-```
-
-Also include a root `vercel.json` file with SPA rewrites (`"source": "/(.*)", "destination": "/index.html"`) and a root `netlify.toml` file with SPA redirects (`/* -> /index.html 200`) so the app is instantly ready for 1-click deployment on both Vercel and Netlify without 404 routing errors.
-
-Generate clean, robust, fully typed TypeScript code without placeholders or missing imports. Build it now!
+────────────────────────────────────────────────────────────────────────────
+8. DEFINITION OF DONE
+────────────────────────────────────────────────────────────────────────────
+- No `response.token`, no localStorage token, no browser API key.
+- Order payload has deliveryMethod + lowercase paymentMethod + item totalPrice.
+- No total/tax submitted.
+- restaurantId is a UUID.
+- Polling watchers stopped on unmount.
+- `grep` for §6 left column returns zero hits.

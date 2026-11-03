@@ -25,6 +25,7 @@ const typeFiles = [
 ];
 
 const moduleFiles = [
+  'security/scope.ts',
   'http/http-client.ts',
   'modules/auth.ts',
   'modules/customer.ts',
@@ -36,6 +37,7 @@ const moduleFiles = [
   'modules/live-agent.ts',
   'utils/format.ts',
   'utils/cart.ts',
+  'utils/audio.ts',
   'client.ts'
 ];
 

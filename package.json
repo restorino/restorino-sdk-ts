@@ -1,38 +1,48 @@
 {
   "name": "@restorino/sdk",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "TypeScript SDK for Restorino Storefront, Vitrine and Customer Dashboard (Lovable.dev & React ready)",
   "main": "dist/index.js",
-  "module": "dist/index.mjs",
+  "module": "dist/esm/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
+      "import": "./dist/esm/index.js",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./bundle": "./dist-bundle/restorino-sdk.ts",
     "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
     "dist-bundle",
+    "examples",
     "README.md",
     "LOVABLE_PROMPT.md",
     "LOVABLE_1SHOT_PROMPT.txt",
     "prompt.txt",
+    "llms.txt",
+    "CHANGELOG.md",
     ".env.example",
-    "vercel.json",
-    "netlify.toml"
+    "LICENSE"
   ],
   "engines": {
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "scripts": {
-    "build": "tsc && npm run bundle:single",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc && tsc -p tsconfig.esm.json && node scripts/build-esm.mjs && npm run bundle:single",
     "bundle:single": "node scripts/bundle-single.mjs",
-    "test": "npm run build && node --test test/**/*.test.mjs",
+    "typecheck": "tsc --noEmit --noUnusedLocals --noUnusedParameters -p tsconfig.json",
+    "typecheck:examples": "tsc -p examples/vanilla/tsconfig.json",
+    "contract:snapshot": "node scripts/contract-snapshot.mjs",
+    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

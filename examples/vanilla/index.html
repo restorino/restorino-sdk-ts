@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Restorino — exemple SDK</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 2rem; max-width: 46rem; }
+      h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
+      h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
+      section { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: .75rem; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+      button { font: inherit; padding: .4rem .8rem; border-radius: .5rem; border: 1px solid currentColor; background: transparent; cursor: pointer; }
+      button:disabled { opacity: .45; cursor: not-allowed; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      li { display: flex; gap: .75rem; align-items: baseline; justify-content: space-between; padding: .5rem 0; border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+      li:last-child { border-bottom: 0; }
+      .muted { opacity: .65; font-size: .875rem; }
+      .error { color: #c0392b; }
+      #status { font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <h1>Restorino — exemple d'intégration SDK</h1>
+
+    <section>
+      <h2>Menu</h2>
+      <p class="muted" id="menu-status">Chargement…</p>
+      <ul id="menu"></ul>
+    </section>
+
+    <section>
+      <h2>Panier</h2>
+      <ul id="cart"><li class="muted">Panier vide</li></ul>
+      <p id="cart-total" class="muted"></p>
+      <button id="checkout" disabled>Commander</button>
+      <p class="muted">Renseignez vos informations avant de commander.</p>
+      <p>
+        <input id="name" placeholder="Nom" autocomplete="name" />
+        <input id="email" type="email" placeholder="Email" autocomplete="email" />
+        <input id="phone" type="tel" placeholder="Téléphone" autocomplete="tel" />
+      </p>
+    </section>
+
+    <section>
+      <h2>Suivi</h2>
+      <p id="status" class="muted">Aucune commande en cours.</p>
+    </section>
+
+    <p id="error" class="error" role="alert"></p>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

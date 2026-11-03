@@ -4,21 +4,31 @@
 export interface CustomerLoginRequest {
   email: string;
   password: string;
+  /** Requis par le backend ; à défaut la valeur de `config.restaurantId` est utilisée. */
   restaurantId?: string;
   captchaToken?: string;
 }
 
 /**
  * Requête d'inscription d'un nouveau compte client.
+ *
+ * `firstName`, `lastName` et `phone` sont `@NotBlank` côté backend : les
+ * marquer optionnels ne faisait que déplacer l'erreur du compilateur vers un
+ * HTTP 400 à l'exécution.
  */
 export interface CustomerRegisterRequest {
   email: string;
+  /** Minimum 8 caractères (contrainte backend). */
   password: string;
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
+  /** 2 à 100 caractères. */
+  firstName: string;
+  /** 2 à 100 caractères. */
+  lastName: string;
+  /** Format `^[+0-9][0-9 .\-()]{5,19}$`. */
+  phone: string;
   restaurantId?: string;
   referralCode?: string;
+  captchaToken?: string;
 }
 
 /**
@@ -35,7 +45,9 @@ export interface CustomerGoogleAuthRequest {
 export interface CustomerLoyaltySummary {
   totalPoints: number;
   availablePoints: number;
-  tier: 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM';
+  /** `BRONZE | SILVER | GOLD | PLATINUM` (sérialisé en chaîne par le backend). */
+  tier: string;
+  totalVisits?: number;
 }
 
 /**
@@ -56,31 +68,33 @@ export interface CustomerDto {
 }
 
 /**
- * Réponse d'authentification client (Login / Register / Me).
+ * Réponse d'authentification client (Login / Register / Google).
+ *
+ * En mode cookies (défaut), le backend place les jetons dans des cookies
+ * HttpOnly et renvoie `token`/`refreshToken` à `null` — ces champs sont donc
+ * optionnels. Ne jamais supposer leur présence pour décider si la session est
+ * ouverte : la source de vérité est le cookie, et `getMe()` pour le profil.
  */
 export interface CustomerAuthResponse {
-  token: string;
-  refreshToken?: string;
   customer: CustomerDto;
+  token?: string | null;
+  refreshToken?: string | null;
+  expiresAt?: string;
   loyalty?: CustomerLoyaltySummary;
 }
 
 /**
- * Requête de rafraîchissement de token.
- */
-export interface CustomerRefreshTokenRequest {
-  refreshToken?: string;
-  restaurantId?: string;
-}
-
-/**
  * Réponse de rafraîchissement de token.
+ *
+ * Le backend répond `{ success: true, message }` et renouvelle via le cookie
+ * `customer_refresh_token` : aucun token n'est renvoyé dans le corps.
  */
 export interface CustomerRefreshTokenResponse {
-  token: string;
+  success?: boolean;
+  message?: string;
+  token?: string;
   refreshToken?: string;
   expiresIn?: number;
-  success?: boolean;
 }
 
 /**
@@ -88,7 +102,10 @@ export interface CustomerRefreshTokenResponse {
  */
 export interface ChangePasswordRequest {
   currentPassword: string;
+  /** Minimum 8 caractères (contrainte backend). */
   newPassword: string;
+  /** Doit être identique à `newPassword` (`@NotBlank` côté backend). */
+  confirmPassword: string;
 }
 
 /**
@@ -101,10 +118,15 @@ export interface PasswordResetRequest {
 
 /**
  * Requête de confirmation de réinitialisation de mot de passe.
+ *
+ * Le champ s'appelle `resetCode` côté backend (et doit contenir 6 chiffres) :
+ * l'ancien `code` provoquait un HTTP 400 systématique.
  */
 export interface PasswordResetConfirmRequest {
   email: string;
-  code: string;
+  /** Code OTP à 6 chiffres. */
+  resetCode: string;
+  /** Minimum 8 caractères (contrainte backend). */
   newPassword: string;
-  restaurantId: string;
+  restaurantId?: string;
 }

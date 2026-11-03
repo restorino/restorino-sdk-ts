@@ -1,4 +1,5 @@
 export * from './types';
+export * from './security/scope';
 export * from './http/http-client';
 export * from './modules/auth';
 export * from './modules/customer';
@@ -10,4 +11,5 @@ export * from './modules/tables';
 export * from './modules/live-agent';
 export * from './utils/format';
 export * from './utils/cart';
+export * from './utils/audio';
 export * from './client';

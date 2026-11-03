@@ -1,0 +1,953 @@
+{
+  "openapi": "3.1.0",
+  "totals": {
+    "paths": 706,
+    "schemas": 375
+  },
+  "endpoints": {
+    "POST /api/auth/customers/login": {
+      "request": {
+        "ref": "CustomerLoginRequest",
+        "required": [],
+        "properties": {
+          "captchaToken": "string",
+          "email": "string",
+          "password": "string",
+          "restaurantId": "string"
+        }
+      },
+      "response": null
+    },
+    "POST /api/auth/customers/register": {
+      "request": {
+        "ref": "CustomerRegisterRequest",
+        "required": [],
+        "properties": {
+          "captchaToken": "string",
+          "email": "string",
+          "firstName": "string",
+          "lastName": "string",
+          "password": "string",
+          "phone": "string",
+          "referralCode": "string",
+          "restaurantId": "string"
+        }
+      },
+      "response": null
+    },
+    "POST /api/auth/customers/google": {
+      "request": {
+        "ref": "GoogleCustomerAuthRequest",
+        "required": [],
+        "properties": {
+          "googleToken": "string",
+          "restaurantId": "string"
+        }
+      },
+      "response": null
+    },
+    "POST /api/auth/customers/logout": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/auth/customers/change-password": {
+      "request": {
+        "ref": "ChangePasswordRequest",
+        "required": [
+          "confirmPassword",
+          "currentPassword",
+          "newPassword"
+        ],
+        "properties": {
+          "confirmPassword": "string",
+          "currentPassword": "string",
+          "newPassword": "string"
+        }
+      },
+      "response": null
+    },
+    "GET /api/auth/customers/me": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/auth/refresh": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/verify-email/request": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/verify-email": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/password/reset-request": {
+      "request": {
+        "ref": "PasswordResetRequest",
+        "required": [],
+        "properties": {
+          "email": "string",
+          "restaurantId": "string"
+        }
+      },
+      "response": null
+    },
+    "POST /api/customers/password/reset-confirm": {
+      "request": {
+        "ref": "PasswordResetConfirmRequest",
+        "required": [],
+        "properties": {
+          "email": "string",
+          "newPassword": "string",
+          "resetCode": "string",
+          "restaurantId": "string"
+        }
+      },
+      "response": null
+    },
+    "POST /api/public/restaurants/search": {
+      "request": {
+        "ref": "RestaurantSearchRequest",
+        "required": [],
+        "properties": {
+          "city": "string",
+          "cuisineType": "string",
+          "deliveryOptions": "array:string",
+          "featuredOnly": "boolean",
+          "latitude": "number",
+          "longitude": "number",
+          "minRating": "number",
+          "openNow": "boolean",
+          "priceRange": "integer",
+          "radiusKm": "number",
+          "searchTerm": "string",
+          "sortBy": "string",
+          "sortDirection": "string"
+        }
+      },
+      "response": null
+    },
+    "GET /api/public/restaurants/popular": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/cuisines": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/delivery-check": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/status": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/reviews": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/menu": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/menu/{tenantOrSlug}/{categorySlug}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/menu/{tenantOrSlug}/{categorySlug}/{productSlug}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/seo/{tenantOrSlug}/meta": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/seo/{tenantOrSlug}/meta/category/{categorySlug}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/seo/{tenantOrSlug}/meta/product/{productSlug}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/testimonials/subdomain/{subdomain}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/testimonials/{restaurantId}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/vitrine/{tenantId}/public": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/vitrine/resolve-domain": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/vitrine/{tenantId}/schema.json": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/public/restaurants/{restaurantId}/orders": {
+      "request": {
+        "ref": "VitrineOrderRequest",
+        "required": [
+          "customerEmail",
+          "customerName",
+          "customerPhone",
+          "deliveryMethod",
+          "items",
+          "paymentMethod"
+        ],
+        "properties": {
+          "customerEmail": "string",
+          "customerLocation": "ref:CustomerLocation",
+          "customerName": "string",
+          "customerPhone": "string",
+          "deliveryAddress": "string",
+          "deliveryFee": "number",
+          "deliveryInstructions": "string",
+          "deliveryMethod": "string",
+          "discount": "number",
+          "items": "array:VitrineOrderItemRequest",
+          "marketingConsent": "boolean",
+          "orderNotes": "string",
+          "paymentMethod": "string",
+          "paymentToken": "string",
+          "pointsToRedeem": "integer",
+          "preferredDeliveryTime": "string",
+          "promoCode": "string",
+          "recoveryToken": "string",
+          "source": "string",
+          "subtotal": "number",
+          "tableNumber": "string",
+          "tableToken": "string",
+          "tax": "number",
+          "total": "number"
+        }
+      },
+      "response": null
+    },
+    "POST /api/public/restaurants/{restaurantId}/orders/estimate-delivery": {
+      "request": {
+        "ref": "EstimateDeliveryRequest",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "address": "string",
+          "latitude": "number",
+          "longitude": "number",
+          "orderValue": "number",
+          "preferredTime": "string"
+        }
+      },
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/orders/{orderId}/track": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/public/restaurants/{restaurantId}/orders/{orderId}/cancel": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/orders/track-link": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/orders/menu": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/orders/settings": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/public/restaurants/{restaurantId}/orders/reservations": {
+      "request": {
+        "ref": "CreateReservationRequest",
+        "required": [
+          "numberOfGuests",
+          "reservationDate"
+        ],
+        "properties": {
+          "customerEmail": "string",
+          "customerGpsAccuracyMeters": "number",
+          "customerLatitude": "number",
+          "customerLongitude": "number",
+          "customerName": "string",
+          "customerPhone": "string",
+          "numberOfGuests": "integer",
+          "reservationDate": "string",
+          "specialRequests": "string",
+          "tableId": "string",
+          "tableNumber": "string"
+        }
+      },
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/orders/reservations/{reservationNumber}/track": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/public/restaurants/{restaurantId}/orders/reservations/{reservationNumber}/cancel": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/tables/{tableId}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/me": {
+      "request": null,
+      "response": null
+    },
+    "PUT /api/customers/me": {
+      "request": {
+        "required": [],
+        "properties": {}
+      },
+      "response": null
+    },
+    "GET /api/customers/orders": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/orders/{orderId}": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/orders/{orderId}/rate": {
+      "request": {
+        "ref": "OrderRatingRequest",
+        "required": [],
+        "properties": {
+          "deliverySpeedRating": "integer",
+          "foodQualityRating": "integer",
+          "reviewText": "string",
+          "serviceRating": "integer"
+        }
+      },
+      "response": null
+    },
+    "GET /api/customers/ratings": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/referral-code": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/apply-referral": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/referrals": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/notifications/customers/my-inbox": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/notifications/customers/my-inbox/unread-count": {
+      "request": null,
+      "response": null
+    },
+    "PUT /api/notifications/customers/my-inbox/{id}/read": {
+      "request": null,
+      "response": null
+    },
+    "PUT /api/notifications/customers/my-inbox/read-all": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/menu/categories": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/menu/products": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/menu/products/{id}": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/menu/supplements": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/menu/garnishes": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/menu/beverages": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/testimonials": {
+      "request": {
+        "ref": "TestimonialRequest",
+        "required": [
+          "rating"
+        ],
+        "properties": {
+          "content": "string",
+          "rating": "integer"
+        }
+      },
+      "response": null
+    },
+    "GET /api/customers/testimonials": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/promo/validate": {
+      "request": {
+        "required": [],
+        "properties": {}
+      },
+      "response": null
+    },
+    "GET /api/customers/loyalty": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/loyalty/rewards": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/loyalty/rewards/{rewardId}/redeem": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/public/restaurants/{restaurantId}/google-review-info": {
+      "request": null,
+      "response": null
+    },
+    "GET /api/customers/google-review/status": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/customers/google-review/claim": {
+      "request": {
+        "ref": "GoogleReviewClaimRequest",
+        "required": [
+          "rating"
+        ],
+        "properties": {
+          "proofImageUrl": "string",
+          "rating": "integer",
+          "reviewComment": "string",
+          "reviewerName": "string"
+        }
+      },
+      "response": null
+    },
+    "POST /api/customers/google-review/upload-proof": {
+      "request": {
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": "string"
+        }
+      },
+      "response": null
+    },
+    "GET /api/public/deliveries/track/{trackingNumber}": {
+      "request": null,
+      "response": null
+    },
+    "POST /api/public/live-agent/{restaurantSlug}/session": {
+      "request": null,
+      "response": null
+    }
+  },
+  "schemas": {
+    "CustomerAuthResponse": {
+      "required": [],
+      "properties": {
+        "customer": "ref:CustomerDto",
+        "expiresAt": "string",
+        "loyalty": "ref:LoyaltyInfo",
+        "refreshToken": "string",
+        "token": "string"
+      }
+    },
+    "CustomerDto": {
+      "required": [],
+      "properties": {
+        "active": "boolean",
+        "avatar": "string",
+        "createdAt": "string",
+        "email": "string",
+        "emailVerified": "boolean",
+        "firstName": "string",
+        "id": "string",
+        "lastLoginAt": "string",
+        "lastName": "string",
+        "phone": "string",
+        "restaurantId": "string"
+      }
+    },
+    "CustomerRegisterRequest": {
+      "required": [],
+      "properties": {
+        "captchaToken": "string",
+        "email": "string",
+        "firstName": "string",
+        "lastName": "string",
+        "password": "string",
+        "phone": "string",
+        "referralCode": "string",
+        "restaurantId": "string"
+      }
+    },
+    "ChangePasswordRequest": {
+      "required": [
+        "confirmPassword",
+        "currentPassword",
+        "newPassword"
+      ],
+      "properties": {
+        "confirmPassword": "string",
+        "currentPassword": "string",
+        "newPassword": "string"
+      }
+    },
+    "PasswordResetConfirmRequest": {
+      "required": [],
+      "properties": {
+        "email": "string",
+        "newPassword": "string",
+        "resetCode": "string",
+        "restaurantId": "string"
+      }
+    },
+    "VitrineOrderRequest": {
+      "required": [
+        "customerEmail",
+        "customerName",
+        "customerPhone",
+        "deliveryMethod",
+        "items",
+        "paymentMethod"
+      ],
+      "properties": {
+        "customerEmail": "string",
+        "customerLocation": "ref:CustomerLocation",
+        "customerName": "string",
+        "customerPhone": "string",
+        "deliveryAddress": "string",
+        "deliveryFee": "number",
+        "deliveryInstructions": "string",
+        "deliveryMethod": "string",
+        "discount": "number",
+        "items": "array:VitrineOrderItemRequest",
+        "marketingConsent": "boolean",
+        "orderNotes": "string",
+        "paymentMethod": "string",
+        "paymentToken": "string",
+        "pointsToRedeem": "integer",
+        "preferredDeliveryTime": "string",
+        "promoCode": "string",
+        "recoveryToken": "string",
+        "source": "string",
+        "subtotal": "number",
+        "tableNumber": "string",
+        "tableToken": "string",
+        "tax": "number",
+        "total": "number"
+      }
+    },
+    "VitrineOrderItemRequest": {
+      "required": [
+        "productId",
+        "productName",
+        "quantity",
+        "totalPrice",
+        "unitPrice"
+      ],
+      "properties": {
+        "categoryId": "string",
+        "categoryName": "string",
+        "garnish": "ref:ItemGarnish",
+        "productId": "string",
+        "productName": "string",
+        "quantity": "integer",
+        "specialInstructions": "string",
+        "supplements": "array:ItemSupplement",
+        "totalPrice": "number",
+        "unitPrice": "number"
+      }
+    },
+    "CustomerLocation": {
+      "required": [],
+      "properties": {
+        "address": "string",
+        "addressLine2": "string",
+        "city": "string",
+        "country": "string",
+        "latitude": "number",
+        "longitude": "number",
+        "postalCode": "string"
+      }
+    },
+    "OrderResponse": {
+      "required": [],
+      "properties": {
+        "actualDeliveryTime": "string",
+        "cancellationReason": "string",
+        "createdAt": "string",
+        "currency": "string",
+        "customerAddress": "string",
+        "customerEmail": "string",
+        "customerName": "string",
+        "customerPhone": "string",
+        "deliveryAddress": "string",
+        "deliveryFee": "number",
+        "deliveryInstructions": "string",
+        "deliveryMethod": "string",
+        "estimatedDeliveryTime": "string",
+        "estimatedTime": "integer",
+        "id": "string",
+        "items": "array:OrderItemResponse",
+        "orderNumber": "string",
+        "orderType": "string",
+        "paymentMethod": "string",
+        "paymentStatus": "string",
+        "restaurantId": "string",
+        "source": "string",
+        "status": "string",
+        "subtotal": "number",
+        "tableNumber": "string",
+        "tax": "number",
+        "total": "number",
+        "trackingUrl": "string",
+        "updatedAt": "string"
+      }
+    },
+    "TrackOrderResponse": {
+      "required": [],
+      "properties": {
+        "actualDeliveryTime": "string",
+        "canBeCancelled": "boolean",
+        "contactInfo": "ref:ContactInfo",
+        "deliveryAddress": "string",
+        "deliveryMethod": "string",
+        "deliveryTracking": "ref:DeliveryTracking",
+        "estimatedDeliveryTime": "string",
+        "orderId": "string",
+        "orderNumber": "string",
+        "orderTime": "string",
+        "progress": "array:OrderProgress",
+        "restaurant": "ref:RestaurantInfo",
+        "status": "string",
+        "statusDescription": "string",
+        "totalAmount": "number"
+      }
+    },
+    "EstimateDeliveryRequest": {
+      "required": [
+        "latitude",
+        "longitude"
+      ],
+      "properties": {
+        "address": "string",
+        "latitude": "number",
+        "longitude": "number",
+        "orderValue": "number",
+        "preferredTime": "string"
+      }
+    },
+    "EstimateDeliveryResponse": {
+      "required": [],
+      "properties": {
+        "additionalInfo": "string",
+        "deliveryFee": "number",
+        "distanceKm": "number",
+        "estimatedDeliveryMinutes": "integer",
+        "estimatedDeliveryTime": "string",
+        "freeDeliveryApplies": "boolean",
+        "minimumOrderValue": "number",
+        "nextAvailableSlot": "string",
+        "withinDeliveryZone": "boolean"
+      }
+    },
+    "CreateReservationRequest": {
+      "required": [
+        "numberOfGuests",
+        "reservationDate"
+      ],
+      "properties": {
+        "customerEmail": "string",
+        "customerGpsAccuracyMeters": "number",
+        "customerLatitude": "number",
+        "customerLongitude": "number",
+        "customerName": "string",
+        "customerPhone": "string",
+        "numberOfGuests": "integer",
+        "reservationDate": "string",
+        "specialRequests": "string",
+        "tableId": "string",
+        "tableNumber": "string"
+      }
+    },
+    "ReservationResponse": {
+      "required": [],
+      "properties": {
+        "cancellationReason": "string",
+        "cancelledAt": "string",
+        "confirmedAt": "string",
+        "createdAt": "string",
+        "customerDistanceMeters": "number",
+        "customerEmail": "string",
+        "customerGpsAccuracyMeters": "number",
+        "customerLatitude": "number",
+        "customerLongitude": "number",
+        "customerName": "string",
+        "customerPhone": "string",
+        "gpsVerifiedAt": "string",
+        "id": "string",
+        "notes": "string",
+        "numberOfGuests": "integer",
+        "reservationDate": "string",
+        "reservationNumber": "string",
+        "restaurantId": "string",
+        "specialRequests": "string",
+        "status": "string",
+        "tableId": "string",
+        "tableNumber": "string",
+        "updatedAt": "string"
+      }
+    },
+    "PublicTableResponse": {
+      "required": [],
+      "properties": {
+        "capacity": "integer",
+        "floorId": "string",
+        "id": "string",
+        "isActive": "boolean",
+        "name": "string",
+        "restaurantId": "string",
+        "shape": "string",
+        "status": "string",
+        "tableNumber": "integer",
+        "tableSessionToken": "string"
+      }
+    },
+    "PublicTrackingResponse": {
+      "required": [],
+      "properties": {
+        "actualDeliveryTime": "string",
+        "currency": "string",
+        "deliveryAddress": "string",
+        "deliveryStatus": "string",
+        "driverLatitude": "number",
+        "driverLongitude": "number",
+        "driverName": "string",
+        "estimatedDeliveryTime": "string",
+        "orderNumber": "string",
+        "orderPlacedTime": "string",
+        "progressSteps": "array:TrackingProgressStep",
+        "restaurantAddress": "string",
+        "restaurantLatitude": "number",
+        "restaurantLongitude": "number",
+        "restaurantName": "string",
+        "restaurantPhone": "string",
+        "statusDescription": "string",
+        "statusDisplayName": "string",
+        "totalAmount": "number",
+        "trackingNumber": "string"
+      }
+    },
+    "PublicVitrineResponse": {
+      "required": [],
+      "properties": {
+        "acceptingOrders": "boolean",
+        "address": "string",
+        "averageRating": "number",
+        "canDeliverToCustomer": "boolean",
+        "city": "string",
+        "coverImageUrl": "string",
+        "cuisineType": "string",
+        "currentOrderProcessingTime": "string",
+        "customCss": "string",
+        "deliveryFee": "number",
+        "deliveryFeeToCustomer": "number",
+        "deliveryMethods": "array:string",
+        "deliveryTimeToCustomer": "integer",
+        "description": "string",
+        "distanceFromCustomer": "number",
+        "email": "string",
+        "estimatedDeliveryMinutes": "integer",
+        "featured": "boolean",
+        "freeDeliveryThreshold": "number",
+        "galleryImages": "array:string",
+        "hasLoyaltyProgram": "boolean",
+        "hasTableReservations": "boolean",
+        "isOpen": "boolean",
+        "location": "ref:CustomerLocation",
+        "logoUrl": "string",
+        "menu": "array:MenuCategoryResponse",
+        "metaDescription": "string",
+        "metaTitle": "string",
+        "minimumOrderAmount": "number",
+        "name": "string",
+        "nextAvailableSlot": "string",
+        "notices": "array:string",
+        "openingHours": "object",
+        "paymentMethods": "array:string",
+        "phone": "string",
+        "popularDishes": "array:string",
+        "preparationTimeMinutes": "integer",
+        "priceRange": "integer",
+        "primaryColor": "string",
+        "restaurantId": "string",
+        "secondaryColor": "string",
+        "socialMediaLinks": "object",
+        "specialHours": "array:string",
+        "specialOffers": "array:string",
+        "tags": "array:string",
+        "totalReviews": "integer",
+        "urlSlug": "string"
+      }
+    },
+    "RestaurantSearchRequest": {
+      "required": [],
+      "properties": {
+        "city": "string",
+        "cuisineType": "string",
+        "deliveryOptions": "array:string",
+        "featuredOnly": "boolean",
+        "latitude": "number",
+        "longitude": "number",
+        "minRating": "number",
+        "openNow": "boolean",
+        "priceRange": "integer",
+        "radiusKm": "number",
+        "searchTerm": "string",
+        "sortBy": "string",
+        "sortDirection": "string"
+      }
+    },
+    "RestaurantSearchResponse": {
+      "required": [],
+      "properties": {
+        "acceptingOrders": "boolean",
+        "address": "string",
+        "canDeliver": "boolean",
+        "city": "string",
+        "coverImageUrl": "string",
+        "cuisineType": "string",
+        "deliveryFee": "number",
+        "deliveryMethods": "array:string",
+        "description": "string",
+        "distanceKm": "number",
+        "estimatedDeliveryMinutes": "integer",
+        "featured": "boolean",
+        "isOpen": "boolean",
+        "latitude": "number",
+        "logoUrl": "string",
+        "longitude": "number",
+        "minimumOrderAmount": "number",
+        "name": "string",
+        "nextAvailableSlot": "string",
+        "openingHours": "string",
+        "paymentMethods": "array:string",
+        "phone": "string",
+        "popularDishes": "array:string",
+        "preparationTimeMinutes": "integer",
+        "priceRange": "integer",
+        "rating": "number",
+        "restaurantId": "string",
+        "reviewCount": "integer",
+        "specialOffer": "string",
+        "urlSlug": "string"
+      }
+    },
+    "NotificationInboxItemResponse": {
+      "required": [],
+      "properties": {
+        "actionButtonText": "string",
+        "actionButtonUrl": "string",
+        "campaignName": "string",
+        "createdAt": "string",
+        "customerEmail": "string",
+        "errorCode": "string",
+        "id": "string",
+        "isRead": "boolean",
+        "message": "string",
+        "notificationType": "string",
+        "orderId": "string",
+        "provider": "string",
+        "restaurantId": "string",
+        "retryCount": "integer",
+        "sentAt": "string",
+        "success": "boolean",
+        "title": "string",
+        "updatedAt": "string"
+      }
+    },
+    "OrderRatingDTO": {
+      "required": [],
+      "properties": {
+        "createdAt": "string",
+        "customerId": "string",
+        "deliverySpeedRating": "integer",
+        "foodQualityRating": "integer",
+        "helpfulCount": "integer",
+        "id": "string",
+        "isApproved": "boolean",
+        "isPublic": "boolean",
+        "orderId": "string",
+        "overallRating": "integer",
+        "respondedAt": "string",
+        "restaurantId": "string",
+        "restaurantResponse": "string",
+        "reviewText": "string",
+        "serviceRating": "integer"
+      }
+    },
+    "LoyaltyReward": {
+      "required": [],
+      "properties": {
+        "available": "boolean",
+        "createdAt": "string",
+        "description": "string",
+        "discountAmount": "number",
+        "discountPercentage": "integer",
+        "id": "string",
+        "imageUrl": "string",
+        "isActive": "boolean",
+        "maxRedemptionsPerCustomer": "integer",
+        "minOrderAmount": "number",
+        "name": "string",
+        "pointsRequired": "integer",
+        "requiredTier": "string",
+        "restaurantId": "string",
+        "rewardType": "string",
+        "tenantId": "string",
+        "totalAvailable": "integer",
+        "totalRedeemed": "integer",
+        "updatedAt": "string",
+        "validFrom": "string",
+        "validUntil": "string"
+      }
+    }
+  },
+  "missingEndpoints": [],
+  "missingSchemas": []
+}

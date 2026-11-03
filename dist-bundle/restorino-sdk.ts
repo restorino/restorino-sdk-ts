@@ -32,19 +32,22 @@ export interface RestorinoClientConfig {
   tenantId?: string;
 
   /**
-   * Clé API Storefront (optionnelle, pour intégrations publiques).
+   * Périmètre d'appels autorisés.
+   *
+   * - `'storefront'` (défaut) : uniquement `/api/public/**`,
+   *   `/api/auth/customers/**`, `/api/customers/**`,
+   *   `/api/notifications/customers/**` et les lectures publiques de la vitrine.
+   *   Toute autre route lève `OUT_OF_SCOPE_ENDPOINT` avant l'appel réseau.
+   * - `'all'` : échappatoire réservée aux outils internes, jamais à un storefront.
    */
-  apiKey?: string;
-
-  /**
-   * Explicit server-only opt-in for sending `X-API-Key`.
-   * Browser clients never send API keys, even when `apiKey` is provided.
-   */
-  allowApiKeyHeader?: boolean;
+  scope?: 'storefront' | 'all';
 
   /**
    * Mécanisme de stockage du token JWT client ('localStorage', 'sessionStorage', ou 'memory').
-   * Défaut: 'localStorage' si disponible dans l'environnement navigateur.
+   *
+   * Défaut: 'memory'. Un refresh token persisté en `localStorage` est lisible
+   * par tout XSS, ce qui annule la protection des cookies HttpOnly du backend.
+   * Ne demandez un stockage navigateur que si vous acceptez ce risque.
    */
   storageType?: 'localStorage' | 'sessionStorage' | 'memory';
 
@@ -97,14 +100,68 @@ export interface RestorinoClientConfig {
 
   /**
    * Mode d'envoi des cookies/identifiants pour fetch ('omit', 'same-origin', ou 'include').
-   * Défaut: 'omit'.
+   *
+   * Défaut: 'include'. Le backend Restorino authentifie les clients par cookies
+   * HttpOnly (`customer_token`), pas par en-tête `Authorization` : la valeur
+   * 'omit' rend toute la surface client inutilisable.
    */
   credentials?: RequestCredentials;
+
+  /**
+   * Envoie le double-submit CSRF (`XSRF-TOKEN` cookie → `X-XSRF-TOKEN` header)
+   * sur les requêtes mutantes. Défaut: true.
+   */
+  csrf?: boolean;
+
+  /**
+   * Identifiant d'appareil opaque et stable (`X-Device-Fingerprint`).
+   * S'il est omis, le SDK en génère un et le persiste dans le stockage configuré.
+   */
+  deviceFingerprint?: string;
+
+  /**
+   * Clé de stockage de l'identifiant d'appareil.
+   * Défaut: 'restorino_device_fingerprint'.
+   */
+  deviceFingerprintStorageKey?: string;
 
   /**
    * Headers HTTP additionnels envoyés avec chaque requête.
    */
   defaultHeaders?: Record<string, string>;
+
+  /**
+   * Hook d'observation appelé avant chaque requête.
+   *
+   * Ne reçoit que la méthode et le chemin déclaré : ni en-têtes (jetons), ni
+   * query string (qui peut transporter un jeton de suivi) ne sont exposés.
+   * Les erreurs du hook sont ignorées et n'affectent jamais la requête.
+   */
+  onRequest?: (event: RestorinoRequestEvent) => void;
+
+  /**
+   * Hook d'observation appelé après chaque réponse HTTP (y compris 4xx/5xx).
+   * `requestId` correspond à l'en-tête `x-request-id` du backend.
+   */
+  onResponse?: (event: RestorinoResponseEvent) => void;
+}
+
+/**
+ * Événement de requête exposé à `onRequest` (sans donnée sensible).
+ */
+export interface RestorinoRequestEvent {
+  method: string;
+  /** Chemin déclaré par le SDK, sans query string. */
+  path: string;
+}
+
+/**
+ * Événement de réponse exposé à `onResponse`.
+ */
+export interface RestorinoResponseEvent extends RestorinoRequestEvent {
+  status: number;
+  durationMs: number;
+  requestId?: string;
 }
 
 /**
@@ -151,21 +208,31 @@ export interface MessageResponse {
 export interface CustomerLoginRequest {
   email: string;
   password: string;
+  /** Requis par le backend ; à défaut la valeur de `config.restaurantId` est utilisée. */
   restaurantId?: string;
   captchaToken?: string;
 }
 
 /**
  * Requête d'inscription d'un nouveau compte client.
+ *
+ * `firstName`, `lastName` et `phone` sont `@NotBlank` côté backend : les
+ * marquer optionnels ne faisait que déplacer l'erreur du compilateur vers un
+ * HTTP 400 à l'exécution.
  */
 export interface CustomerRegisterRequest {
   email: string;
+  /** Minimum 8 caractères (contrainte backend). */
   password: string;
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
+  /** 2 à 100 caractères. */
+  firstName: string;
+  /** 2 à 100 caractères. */
+  lastName: string;
+  /** Format `^[+0-9][0-9 .\-()]{5,19}$`. */
+  phone: string;
   restaurantId?: string;
   referralCode?: string;
+  captchaToken?: string;
 }
 
 /**
@@ -182,7 +249,9 @@ export interface CustomerGoogleAuthRequest {
 export interface CustomerLoyaltySummary {
   totalPoints: number;
   availablePoints: number;
-  tier: 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM';
+  /** `BRONZE | SILVER | GOLD | PLATINUM` (sérialisé en chaîne par le backend). */
+  tier: string;
+  totalVisits?: number;
 }
 
 /**
@@ -203,31 +272,33 @@ export interface CustomerDto {
 }
 
 /**
- * Réponse d'authentification client (Login / Register / Me).
+ * Réponse d'authentification client (Login / Register / Google).
+ *
+ * En mode cookies (défaut), le backend place les jetons dans des cookies
+ * HttpOnly et renvoie `token`/`refreshToken` à `null` — ces champs sont donc
+ * optionnels. Ne jamais supposer leur présence pour décider si la session est
+ * ouverte : la source de vérité est le cookie, et `getMe()` pour le profil.
  */
 export interface CustomerAuthResponse {
-  token: string;
-  refreshToken?: string;
   customer: CustomerDto;
+  token?: string | null;
+  refreshToken?: string | null;
+  expiresAt?: string;
   loyalty?: CustomerLoyaltySummary;
 }
 
 /**
- * Requête de rafraîchissement de token.
- */
-export interface CustomerRefreshTokenRequest {
-  refreshToken?: string;
-  restaurantId?: string;
-}
-
-/**
  * Réponse de rafraîchissement de token.
+ *
+ * Le backend répond `{ success: true, message }` et renouvelle via le cookie
+ * `customer_refresh_token` : aucun token n'est renvoyé dans le corps.
  */
 export interface CustomerRefreshTokenResponse {
-  token: string;
+  success?: boolean;
+  message?: string;
+  token?: string;
   refreshToken?: string;
   expiresIn?: number;
-  success?: boolean;
 }
 
 /**
@@ -235,7 +306,10 @@ export interface CustomerRefreshTokenResponse {
  */
 export interface ChangePasswordRequest {
   currentPassword: string;
+  /** Minimum 8 caractères (contrainte backend). */
   newPassword: string;
+  /** Doit être identique à `newPassword` (`@NotBlank` côté backend). */
+  confirmPassword: string;
 }
 
 /**
@@ -248,12 +322,17 @@ export interface PasswordResetRequest {
 
 /**
  * Requête de confirmation de réinitialisation de mot de passe.
+ *
+ * Le champ s'appelle `resetCode` côté backend (et doit contenir 6 chiffres) :
+ * l'ancien `code` provoquait un HTTP 400 systématique.
  */
 export interface PasswordResetConfirmRequest {
   email: string;
-  code: string;
+  /** Code OTP à 6 chiffres. */
+  resetCode: string;
+  /** Minimum 8 caractères (contrainte backend). */
   newPassword: string;
-  restaurantId: string;
+  restaurantId?: string;
 }
 
 // ==========================================
@@ -261,13 +340,55 @@ export interface PasswordResetConfirmRequest {
 // ==========================================
 
 /**
+ * Article d'une commande telle que renvoyée par l'espace client.
+ * Ce DTO nomme le prix unitaire `price` (et non `unitPrice`).
+ */
+export interface CustomerOrderItem {
+  id: string;
+  productId?: string;
+  productName: string;
+  quantity: number;
+  price: number;
+  totalPrice: number;
+  specialInstructions?: string;
+}
+
+/**
+ * Commande de l'historique client (`GET /api/customers/orders`).
+ * Le backend renvoie `total`, `subtotal`, `tax`, `deliveryFee` — il n'existe
+ * ni `totalAmount` ni `restaurantId` dans ce payload.
+ */
+export interface CustomerOrder {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  customerAddress?: string;
+  status: OrderStatus;
+  orderType: string;
+  paymentMethod: string;
+  paymentStatus: string;
+  total: number;
+  subtotal: number;
+  tax: number;
+  deliveryFee: number;
+  currency: string;
+  createdAt: string;
+  updatedAt?: string;
+  items: CustomerOrderItem[];
+}
+
+/**
  * Requête de mise à jour du profil client.
+ *
+ * Le backend ne lit que `firstName`, `lastName` et `phone` : `avatar` y était
+ * silencieusement ignoré (succès affiché, donnée non persistée).
  */
 export interface UpdateCustomerProfileRequest {
   firstName?: string;
   lastName?: string;
   phone?: string;
-  avatar?: string;
 }
 
 /**
@@ -281,17 +402,24 @@ export interface OrderRatingRequest {
 }
 
 /**
- * DTO d'évaluation d'une commande.
+ * DTO d'évaluation d'une commande (`OrderRatingDTO`).
+ * La note globale s'appelle `overallRating`, pas `averageRating`.
  */
 export interface OrderRatingDTO {
   id: string;
   orderId: string;
   customerId: string;
+  restaurantId: string;
   foodQualityRating: number;
   deliverySpeedRating: number;
   serviceRating: number;
-  averageRating: number;
+  overallRating: number;
   reviewText?: string;
+  restaurantResponse?: string;
+  respondedAt?: string;
+  isPublic?: boolean;
+  isApproved?: boolean;
+  helpfulCount?: number;
   createdAt: string;
 }
 
@@ -304,14 +432,21 @@ export interface ReferralCodeResponse {
 }
 
 /**
- * Historique des parrainages d'un client.
+ * Historique des parrainages d'un client (`ReferralTracking`).
  */
+export type ReferralStatus = 'PENDING' | 'COMPLETED' | 'EXPIRED' | 'CANCELLED';
+
 export interface ReferralTrackingItem {
   id: string;
-  refereeEmail: string;
-  status: 'PENDING' | 'COMPLETED' | 'EXPIRED';
-  rewardPointsEarned: number;
-  createdAt: string;
+  referralCode: string;
+  status: ReferralStatus;
+  referrerCustomerId?: string;
+  referredCustomerId?: string;
+  /** Points crédités au parrain. */
+  referrerRewardPoints?: number;
+  /** Points crédités au filleul. */
+  referredRewardPoints?: number;
+  createdAt?: string;
   completedAt?: string;
 }
 
@@ -320,42 +455,54 @@ export interface ReferralTrackingItem {
  */
 export interface ReferralDashboardResponse {
   referrals: ReferralTrackingItem[];
-  completedCount: number;
-  pendingCount: number;
+  totalReferrals?: number;
+  completedReferrals?: number;
+  pendingReferrals?: number;
+  completedCount?: number;
+  pendingCount?: number;
 }
 
 /**
- * Notification in-app reçue par un client.
+ * Notification in-app reçue par un client (`NotificationInboxItemResponse`).
  */
 export interface CustomerNotification {
   id: string;
+  orderId?: string;
   title: string;
   message: string;
-  type: string;
-  read: boolean;
-  actionUrl?: string;
+  /** Le backend sérialise ce champ `notificationType` (et non `type`). */
+  notificationType: string;
+  /** Sérialisé `isRead` (et non `read`). */
+  isRead: boolean;
+  actionButtonText?: string;
+  actionButtonUrl?: string;
+  sentAt?: string;
   createdAt: string;
 }
 
 /**
- * Requête de soumission d'un témoignage.
+ * Requête de soumission d'un témoignage (`TestimonialRequest`).
+ * Le corps de l'avis s'appelle `content` (10 à 1000 caractères).
  */
 export interface CreateTestimonialRequest {
   rating: number;
-  comment: string;
-  authorName?: string;
+  content: string;
 }
 
 /**
- * Réponse pour un témoignage.
+ * Réponse pour un témoignage (`TestimonialResponse`).
  */
 export interface TestimonialResponse {
   id: string;
+  restaurantId: string;
+  customerId?: string;
   customerName: string;
+  content: string;
   rating: number;
-  comment: string;
+  status?: 'PENDING' | 'APPROVED' | 'REJECTED';
   createdAt: string;
-  verifiedPurchase?: boolean;
+  approvedAt?: string;
+  pointsAwarded?: number;
 }
 
 /**
@@ -378,71 +525,101 @@ export interface PromoValidationResponse {
 export type LoyaltyTier = 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM';
 
 /**
- * Entité fidélité d'un client.
+ * Entité fidélité d'un client (`/api/customers/loyalty`).
+ *
+ * Le backend renvoie une `Map` : `customerId`, `restaurantId`,
+ * `nextTierPointsNeeded` et `tierProgressPercentage` n'y figurent pas.
  */
 export interface CustomerLoyalty {
   id: string;
-  customerId: string;
-  restaurantId: string;
+  customerId?: string;
+  restaurantId?: string;
   totalPoints: number;
   availablePoints: number;
   lifetimePoints: number;
-  tier: LoyaltyTier;
+  /** Sérialisé en chaîne libre : `BRONZE | SILVER | GOLD | PLATINUM`. */
+  tier: LoyaltyTier | string;
+  totalVisits?: number;
+  totalSpent?: number;
+  currency?: string;
+  lastVisit?: string;
+  tierConfig?: Record<string, unknown>;
   nextTierPointsNeeded?: number;
   tierProgressPercentage?: number;
 }
 
 /**
- * Types de récompenses échangeables.
+ * Types de récompenses échangeables (`LoyaltyReward.RewardType`).
  */
-export type RewardType = 'DISCOUNT_FIXED' | 'DISCOUNT_PERCENT' | 'FREE_PRODUCT' | 'FREE_BEVERAGE' | 'GIFT';
+export type RewardType = 'DISCOUNT' | 'PERCENTAGE' | 'FREE_ITEM' | 'CASHBACK' | 'CUSTOM';
 
 /**
- * Récompense du catalogue fidélité.
+ * Récompense du catalogue fidélité (`LoyaltyReward`).
+ * Le coût s'appelle `pointsRequired` (et non `pointsCost`).
  */
 export interface LoyaltyReward {
   id: string;
+  restaurantId?: string;
   name: string;
   description?: string;
-  pointsCost: number;
+  pointsRequired: number;
   rewardType: RewardType;
-  discountValue?: number;
-  productId?: string;
-  productName?: string;
+  discountAmount?: number;
+  discountPercentage?: number;
+  freeProductId?: string;
+  minOrderAmount?: number;
+  requiredTier?: LoyaltyTier | string;
+  maxRedemptionsPerCustomer?: number;
+  totalAvailable?: number;
+  totalRedeemed?: number;
+  validFrom?: string;
+  validUntil?: string;
   isActive: boolean;
   imageUrl?: string;
 }
 
 /**
- * Résultat d'un échange de récompense.
+ * Résultat d'un échange de récompense (`LoyaltyService.RedemptionResult`).
+ *
+ * Il n'existe ni `success`, ni `pointsDeducted`, ni `promoCode` : un HTTP 2xx
+ * vaut succès, et la remise est portée par `discountAmount` /
+ * `discountPercentage` / `freeProductId`.
  */
 export interface RedemptionResult {
-  success: boolean;
   rewardId: string;
   rewardName: string;
-  pointsDeducted: number;
+  rewardType: RewardType | string;
+  discountAmount?: number;
+  discountPercentage?: number;
+  freeProductId?: string;
   remainingPoints: number;
-  promoCode?: string;
 }
 
 /**
- * Informations de récompense pour avis Google.
+ * Informations de récompense pour avis Google (`GoogleReviewConfigDTO`).
  */
 export interface GoogleReviewInfoResponse {
-  googleReviewUrl: string;
-  rewardPoints: number;
   enabled: boolean;
-  instructions?: string;
+  pointsAmount: number;
+  cooldownDays?: number;
+  googlePlaceUrl?: string;
+  minRating?: number;
+  requirePriorVisit?: boolean;
+  maxPointsPerClaim?: number;
 }
 
 /**
- * Statut d'éligibilité de réclamation d'avis Google pour le client.
+ * Statut d'éligibilité de réclamation d'avis Google (`GoogleReviewCustomerStatusDTO`).
  */
 export interface GoogleReviewStatusResponse {
+  enabled: boolean;
+  pointsAmount: number;
+  cooldownDays?: number;
+  googlePlaceUrl?: string;
   canClaim: boolean;
-  hasPendingClaim: boolean;
-  alreadyRewarded: boolean;
-  lastClaimDate?: string;
+  reasonCannotClaim?: string;
+  cooldownDaysRemaining?: number;
+  activeClaim?: GoogleReviewClaimDTO | null;
 }
 
 /**
@@ -488,163 +665,246 @@ export interface UploadReviewProofResponse {
 // ==========================================
 
 /**
- * Informations publiques de vitrine d'un restaurant.
+ * Informations publiques de vitrine d'un restaurant (`PublicVitrineResponse`).
+ *
+ * La clé d'identité est `restaurantId` : il n'existe pas de champ `id`.
  */
 export interface PublicVitrineResponse {
-  id: string;
+  restaurantId: string;
   name: string;
-  slug?: string;
-  subdomain?: string;
-  customDomain?: string;
   description?: string;
+  /** Chaîne unique (ex. « Italien »), pas un tableau. */
+  cuisineType?: string;
+  logoUrl?: string;
+  coverImageUrl?: string;
+  galleryImages?: string[];
   address?: string;
   city?: string;
-  postalCode?: string;
   phone?: string;
   email?: string;
-  bannerUrl?: string;
-  logoUrl?: string;
-  primaryColor?: string;
-  secondaryColor?: string;
-  cuisines: string[];
-  deliveryEnabled: boolean;
-  takeawayEnabled: boolean;
-  dineInEnabled: boolean;
+  location?: { latitude: number; longitude: number; address?: string; city?: string; postalCode?: string };
+  menu?: PublicCategory[];
+  /** `delivery | takeout | dine-in` (valeurs serveur). */
+  deliveryMethods?: string[];
+  minimumOrderAmount?: number;
+  deliveryFee?: number;
+  freeDeliveryThreshold?: number;
+  estimatedDeliveryMinutes?: number;
+  preparationTimeMinutes?: number;
+  isOpen?: boolean;
+  acceptingOrders?: boolean;
+  openingHours?: Record<string, string>;
+  specialHours?: string[];
   averageRating?: number;
-  reviewCount?: number;
-  currency?: string;
+  totalReviews?: number;
+  priceRange?: number;
+  canDeliverToCustomer?: boolean;
+  distanceFromCustomer?: number;
+  deliveryTimeToCustomer?: number;
+  deliveryFeeToCustomer?: number;
+  urlSlug?: string;
+  metaTitle?: string;
+  metaDescription?: string;
 }
 
 /**
- * Critères de recherche multicritère de restaurants.
+ * Critères de recherche (`RestaurantSearchRequest`).
+ * Les noms sont ceux du backend : `searchTerm` / `cuisineType`. Les anciens
+ * `query` / `cuisine` étaient ignorés silencieusement par Jackson.
  */
 export interface RestaurantSearchRequest {
-  query?: string;
-  cuisine?: string;
+  searchTerm?: string;
+  cuisineType?: string;
   city?: string;
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
-  deliveryOnly?: boolean;
+  priceRange?: number;
+  minRating?: number;
+}
+
+/**
+ * Résultat de recherche (`RestaurantSearchResponse`).
+ */
+export interface RestaurantSearchResponse {
+  restaurantId: string;
+  name: string;
+  description?: string;
+  cuisineType?: string;
+  logoUrl?: string;
+  coverImageUrl?: string;
+  address?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  distanceKm?: number;
+  rating?: number;
+  reviewCount?: number;
+  priceRange?: number;
+  minimumOrderAmount?: number;
+  deliveryFee?: number;
+  estimatedDeliveryMinutes?: number;
+  deliveryMethods?: string[];
+  isOpen?: boolean;
+  acceptingOrders?: boolean;
+  featured?: boolean;
+  specialOffer?: string;
+  openingHours?: string;
+  phone?: string;
+  urlSlug?: string;
+  preparationTimeMinutes?: number;
+  popularDishes?: string[];
+  paymentMethods?: string[];
+  canDeliver?: boolean;
+  nextAvailableSlot?: string;
 }
 
 /**
  * Option ou supplément d'un plat (sauce, taille, extra).
+ * Le backend expose `isActive` (entités Supplement/Garnish/Beverage).
  */
 export interface ProductOption {
   id: string;
   name: string;
   price: number;
-  isAvailable: boolean;
+  isActive?: boolean;
 }
 
 /**
  * Produit / plat public d'un menu.
+ *
+ * La forme dépend de l'endpoint : `/api/public/menu/**` renvoie le DTO
+ * (`slug`, `allergenInfo`, `images`) tandis que `/api/customers/menu/**`
+ * renvoie l'entité (`id`, `categoryId`, `allergens`). Les deux variantes sont
+ * donc optionnelles ici plutôt que promises à tort.
  */
 export interface PublicProduct {
-  id: string;
+  id?: string;
+  categoryId?: string;
+  slug?: string;
   name: string;
   description?: string;
-  slug?: string;
+  url?: string;
   price: number;
   currency?: string;
   imageUrl?: string;
-  isAvailable: boolean;
+  images?: string[];
+  isAvailable?: boolean;
+  isFeatured?: boolean;
   isPopular?: boolean;
-  categoryId: string;
+  preparationTimeMinutes?: number;
+  /** Chaîne sérialisée par le DTO public. */
+  allergenInfo?: string;
+  /** Tableau tel que renvoyé par l'entité interne. */
   allergens?: string[];
   supplements?: ProductOption[];
   garnishes?: ProductOption[];
   sizes?: { name: string; price: number }[];
+  updatedAt?: string;
 }
 
 /**
  * Catégorie publique du menu.
+ * `/orders/menu` fournit `categoryId` ; les endpoints SEO fournissent `slug`.
  */
 export interface PublicCategory {
-  id: string;
+  id?: string;
+  categoryId?: string;
+  slug?: string;
   name: string;
   description?: string;
-  slug: string;
-  displayOrder: number;
+  displayOrder?: number;
   imageUrl?: string;
+  url?: string;
+  isActive?: boolean;
+  available?: boolean;
+  updatedAt?: string;
   products?: PublicProduct[];
 }
 
 /**
- * Carte / Menu public complet d'un restaurant.
+ * Carte / Menu public complet du restaurant (`/orders/menu`).
  */
 export interface PublicMenuResponse {
   restaurantId: string;
   restaurantName: string;
   currency: string;
   categories: PublicCategory[];
+  minimumOrderValue?: number;
+  deliveryFee?: number;
+  freeDeliveryThreshold?: number;
+  paymentMethods?: string[];
+  acceptsOrders?: boolean;
 }
 
 /**
- * Résultat de vérification d'éligibilité de livraison par géolocalisation.
+ * Résultat de vérification d'éligibilité de livraison (`delivery-check`).
  */
 export interface DeliveryZoneCheckResponse {
-  isEligible: boolean;
+  canDeliver: boolean;
+  restaurantId?: string;
+  customerLocation?: { latitude: number; longitude: number; address?: string };
+  estimatedDeliveryTime?: number;
   deliveryFee: number;
-  minimumOrderAmount: number;
-  estimatedDeliveryMinutes: number;
-  zoneName?: string;
-  message?: string;
+  minimumOrderAmount?: number;
 }
 
 /**
  * Statut d'ouverture temps réel d'un restaurant.
  */
 export interface RestaurantStatusResponse {
+  restaurantId?: string;
   isOpen: boolean;
   acceptingOrders: boolean;
-  currentShift?: string;
-  nextOpeningTime?: string;
-  message?: string;
+  operatingStatus?: string;
 }
 
 /**
- * Métadonnées SEO et balises OpenGraph pour le site vitrine.
+ * Enveloppe SEO renvoyée par `/api/public/seo/**`.
+ * Les balises sont imbriquées sous `tags` et utilisent les noms OpenGraph
+ * (`og:title`, `og:image`, `twitter:card`).
  */
 export interface SeoMetaTagsResponse {
-  title: string;
-  description: string;
-  canonicalUrl: string;
-  ogTitle: string;
-  ogDescription: string;
-  ogImage?: string;
-  twitterCard?: string;
+  tenantId?: string;
+  baseUrl?: string;
+  tags: {
+    title?: string;
+    description?: string;
+    canonical?: string;
+    'og:title'?: string;
+    'og:description'?: string;
+    'og:image'?: string;
+    'twitter:card'?: string;
+    robots?: string;
+    'theme-color'?: string;
+    [key: string]: string | undefined;
+  };
 }
 
 /**
- * Réponse de validation d'une clé API Vitrine (POST /api/vitrine/api-keys/validate).
+ * Avis public d'un restaurant.
  */
-export interface ValidateApiKeyResponse {
-  valid: boolean;
-  keyId?: string;
-  restaurantId?: string;
-  description?: string;
-  isActive?: boolean;
-  expiresAt?: string;
-  lastUsedAt?: string;
-  permissions?: string[];
-  message?: string;
-}
-
-/**
- * Modèle de template vitrine disponible.
- */
-export interface TemplateResponse {
+export interface PublicReview {
   id: string;
-  name: string;
-  description: string;
-  category: string;
-  imageUrl?: string;
-  color?: string;
-  features?: string[];
-  sampleData?: Map<string, any>;
-  isActive?: boolean;
+  customerName?: string;
+  rating?: number;
+  overallRating?: number;
+  content?: string;
+  reviewText?: string;
+  createdAt?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Réponse de `/api/public/restaurants/{id}/reviews` (objet dédié, pas un `Page`).
+ */
+export interface RestaurantReviewsResponse {
+  restaurantId: string;
+  totalReviews: number;
+  averageRating: number;
+  reviews: PublicReview[];
+  totalPages: number;
+  currentPage: number;
 }
 
 /**
@@ -696,57 +956,101 @@ export interface VitrineConfigResponse {
 // ==========================================
 
 /**
- * Types de commande.
+ * Type de commande envoyé à l'API.
+ * Le backend valide `^(delivery|takeout|dine-in)$` : les anciennes valeurs
+ * `TAKEAWAY` / `DINE_IN` étaient rejetées par un HTTP 400.
  */
-export type OrderType = 'DELIVERY' | 'TAKEAWAY' | 'DINE_IN';
+export type DeliveryMethod = 'delivery' | 'takeout' | 'dine-in';
 
 /**
- * Moyens de paiement acceptés.
+ * Type de commande tel que sérialisé dans les réponses (`DELIVERY|TAKEOUT|DINE_IN`).
  */
-export type PaymentMethod = 'CASH' | 'CARD_ONLINE' | 'CARD_ON_DELIVERY' | 'MEAL_VOUCHER';
+export type OrderType = 'DELIVERY' | 'TAKEOUT' | 'DINE_IN';
 
 /**
- * Coordonnées de livraison du client.
+ * Moyens de paiement acceptés (`^(card|cash|paypal|stripe|mobile)$`).
+ */
+export type PaymentMethod = 'card' | 'cash' | 'paypal' | 'stripe' | 'mobile';
+
+/**
+ * Coordonnées de livraison du client (`CustomerLocation` backend).
  */
 export interface CustomerLocation {
-  street: string;
-  city: string;
-  postalCode: string;
+  /** Obligatoire dès que `customerLocation` est fourni. */
   latitude: number;
   longitude: number;
-  floor?: string;
-  doorCode?: string;
-  instructions?: string;
+  /** Alternative aux coordonnées : une adresse non vide suffit pour livrer. */
+  address?: string;
+  city?: string;
+  postalCode?: string;
+}
+
+export interface OrderItemSupplement {
+  supplementId: string;
+  supplementName: string;
+  price: number;
+  quantity: number;
+}
+
+export interface OrderItemGarnish {
+  garnishId: string;
+  garnishName: string;
+  price: number;
 }
 
 /**
- * Article sélectionné dans le panier.
+ * Article sélectionné dans le panier (`VitrineOrderItemRequest`).
+ *
+ * `totalPrice` est `@NotNull` côté backend : sans lui toute commande est
+ * rejetée. Les prix restent revalidés côté serveur (`validateOrderTotals`).
  */
 export interface OrderItemRequest {
   productId: string;
   productName: string;
   quantity: number;
   unitPrice: number;
-  selectedSize?: string;
-  supplementIds?: string[];
-  garnishIds?: string[];
+  /** `unitPrice * quantity` + suppléments + garniture. */
+  totalPrice: number;
+  categoryId?: string;
+  categoryName?: string;
   specialInstructions?: string;
+  supplements?: OrderItemSupplement[];
+  garnish?: OrderItemGarnish;
 }
 
 /**
- * Requête complète de passage de commande publique.
+ * Requête complète de passage de commande publique (`VitrineOrderRequest`).
  */
 export interface VitrineOrderRequest {
   customerName: string;
+  customerEmail: string;
   customerPhone: string;
-  customerEmail?: string;
-  orderType: OrderType;
-  deliveryLocation?: CustomerLocation;
-  tableNumber?: string;
+  deliveryMethod: DeliveryMethod;
   paymentMethod: PaymentMethod;
   items: OrderItemRequest[];
+  /** Requis pour `delivery` sans coordonnées GPS utilisables. */
+  customerLocation?: CustomerLocation;
+  deliveryAddress?: string;
+  deliveryInstructions?: string;
+  preferredDeliveryTime?: string;
+  tableNumber?: string;
+  tableToken?: string;
+  paymentToken?: string;
   promoCode?: string;
-  notes?: string;
+  pointsToRedeem?: number;
+  orderNotes?: string;
+  marketingConsent?: boolean;
+  subtotal?: number;
+  tax?: number;
+  deliveryFee?: number;
+  discount?: number;
+  total?: number;
+  recoveryToken?: string;
+  /** Champ anti-spam : doit rester vide. */
+  website?: string;
+  formTimestamp?: number;
+  /** Transmis en en-tête `Idempotency-Key`, jamais dans le corps. */
+  idempotencyKey?: string;
 }
 
 /**
@@ -754,36 +1058,66 @@ export interface VitrineOrderRequest {
  */
 export interface OrderItemResponse {
   id: string;
+  productId?: string;
   productName: string;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  specialInstructions?: string;
 }
 
 /**
- * Statuts d'une commande.
+ * Statuts d'une commande (`OrderStatus` backend).
  */
-export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'PREPARING' | 'READY' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED';
+export type OrderStatus =
+  | 'PENDING'
+  | 'CONFIRMED'
+  | 'PREPARING'
+  | 'READY'
+  | 'OUT_FOR_DELIVERY'
+  | 'DELIVERED'
+  | 'COMPLETED'
+  | 'CANCELLED'
+  | 'REFUSED'
+  | 'REFUNDED'
+  | 'PENDING_VERIFICATION';
 
 /**
- * Réponse retournée après création d'une commande.
+ * Réponse retournée après création ou lecture d'une commande (`OrderResponse`).
+ *
+ * Les montants sont `subtotal`, `tax`, `deliveryFee`, `total` : le backend
+ * n'expose ni `totalAmount` ni `subtotalAmount`.
  */
 export interface OrderResponse {
   id: string;
-  orderNumber: string;
   restaurantId: string;
-  status: OrderStatus;
-  orderType: OrderType;
-  totalAmount: number;
-  subtotalAmount: number;
-  deliveryFee: number;
-  discountAmount: number;
-  currency: string;
-  trackingToken: string;
-  trackingUrl: string;
-  estimatedDeliveryTime?: string;
-  createdAt: string;
+  orderNumber: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
+  customerAddress?: string;
+  tableNumber?: string;
   items: OrderItemResponse[];
+  subtotal: number;
+  tax: number;
+  deliveryFee: number;
+  total: number;
+  currency: string;
+  status: OrderStatus;
+  paymentMethod: string;
+  paymentStatus: string;
+  orderType: OrderType;
+  deliveryMethod?: string;
+  deliveryAddress?: string;
+  deliveryInstructions?: string;
+  cancellationReason?: string;
+  trackingUrl?: string;
+  estimatedTime?: number;
+  estimatedDeliveryTime?: string;
+  actualDeliveryTime?: string;
+  source?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 /**
@@ -822,54 +1156,110 @@ export interface CancelReservationRequest {
 }
 
 /**
- * Suivi en temps réel de commande.
+ * Suivi en temps réel de commande (`TrackOrderResponse`).
  */
 export interface OrderTrackingResponse {
   orderId: string;
   orderNumber: string;
   status: OrderStatus;
-  estimatedReadyTime?: string;
+  statusDescription?: string;
+  orderTime?: string;
   estimatedDeliveryTime?: string;
-  isDelivered: boolean;
-  trackingNumber?: string;
-  deliveryDriverName?: string;
-  driverPhone?: string;
+  actualDeliveryTime?: string;
+  totalAmount?: number;
+  deliveryMethod?: string;
+  deliveryAddress?: string;
+  canBeCancelled?: boolean;
+  restaurant?: { name: string; phone?: string; address?: string };
+  progress?: Array<{ step: string; description?: string; timestamp?: string; completed?: boolean }>;
+  deliveryTracking?: {
+    driverName?: string;
+    driverPhone?: string;
+    currentLatitude?: number;
+    currentLongitude?: number;
+    etaMinutes?: number;
+  };
+  contactInfo?: { restaurantPhone?: string; supportEmail?: string; supportPhone?: string };
 }
 
 /**
- * Estimation de livraison.
+ * Requête d'estimation de livraison (`EstimateDeliveryRequest`).
+ */
+export interface EstimateDeliveryRequest {
+  latitude: number;
+  longitude: number;
+  /** 10 à 500 caractères, `@NotBlank` côté backend. */
+  address: string;
+  /** Format `HH:mm`. */
+  preferredTime?: string;
+  orderValue?: number;
+}
+
+/**
+ * Estimation de livraison (`EstimateDeliveryResponse`).
  */
 export interface DeliveryEstimateResponse {
+  estimatedDeliveryMinutes: number;
+  estimatedDeliveryTime?: string;
+  distanceKm?: number;
   deliveryFee: number;
-  estimatedMinutes: number;
-  isDeliverable: boolean;
-  message?: string;
+  withinDeliveryZone: boolean;
+  minimumOrderValue?: number;
+  freeDeliveryApplies?: boolean;
+  nextAvailableSlot?: string;
+  additionalInfo?: string;
 }
 
 /**
- * Requête de création d'une réservation de table.
+ * Requête de création d'une réservation de table (`CreateReservationRequest`).
  */
 export interface CreateReservationRequest {
   customerName: string;
   customerPhone: string;
   customerEmail: string;
-  reservationDate: string; // YYYY-MM-DD
-  reservationTime: string; // HH:mm
-  partySize: number;
+  /** 1 à 50 convives. */
+  numberOfGuests: number;
+  /** Date-heure ISO 8601 dans le futur, ex. `2026-12-24T20:30:00`. */
+  reservationDate: string;
   specialRequests?: string;
+  tableId?: string;
+  tableNumber?: string;
+  customerLatitude?: number;
+  customerLongitude?: number;
+  customerGpsAccuracyMeters?: number;
+  /** Champ anti-spam : doit rester vide. */
+  website?: string;
+  formTimestamp?: number;
 }
 
+export type ReservationStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' | 'NO_SHOW';
+
 /**
- * Réponse de réservation.
+ * Réponse de réservation (`ReservationResponse`).
  */
 export interface ReservationResponse {
   id: string;
   reservationNumber: string;
-  status: 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'CANCELLED';
+  restaurantId: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  numberOfGuests: number;
   reservationDate: string;
-  reservationTime: string;
-  partySize: number;
+  status: ReservationStatus;
+  specialRequests?: string;
+  tableId?: string;
+  tableNumber?: string;
+  confirmedAt?: string;
+  cancelledAt?: string;
+  cancellationReason?: string;
+  notes?: string;
+  customerLatitude?: number;
+  customerLongitude?: number;
+  customerDistanceMeters?: number;
+  gpsVerifiedAt?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 /**
@@ -891,28 +1281,53 @@ export interface PublicRestaurantSettingsResponse {
 // ==========================================
 
 /**
- * Coordonnées GPS pour le tracking livreur.
+ * Statuts de livraison (`DeliveryStatus` backend).
+ * `ACCEPTED`/`OUT_FOR_DELIVERY` n'existent pas côté serveur.
  */
-export interface DriverGpsLocation {
-  latitude: number;
-  longitude: number;
-  updatedAt?: string;
+export type DeliveryStatus =
+  | 'PENDING'
+  | 'ASSIGNED'
+  | 'PICKED_UP'
+  | 'IN_TRANSIT'
+  | 'DELIVERED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export interface TrackingProgressStep {
+  key: string;
+  label: string;
+  completed: boolean;
+  current: boolean;
+  timestamp?: string;
 }
 
 /**
- * Réponse du suivi public de livraison sans authentification.
+ * Suivi public de livraison (`PublicTrackingResponse`).
+ *
+ * ⚠️ Les coordonnées livreur sont aplaties (`driverLatitude` /
+ * `driverLongitude`) et ne sont présentes qu'en `PICKED_UP` / `IN_TRANSIT`.
  */
 export interface PublicTrackingResponse {
   trackingNumber: string;
   orderNumber: string;
-  status: 'PENDING' | 'ACCEPTED' | 'PICKED_UP' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'FAILED';
-  driverName?: string;
-  driverPhone?: string;
-  driverLocation?: DriverGpsLocation;
-  etaMinutes?: number;
+  deliveryStatus: DeliveryStatus;
+  statusDisplayName?: string;
+  statusDescription?: string;
+  orderPlacedTime?: string;
   estimatedDeliveryTime?: string;
+  actualDeliveryTime?: string;
+  deliveryAddress?: string;
+  driverName?: string;
+  driverLatitude?: number;
+  driverLongitude?: number;
   restaurantName: string;
-  deliveryAddressSummary?: string;
+  restaurantPhone?: string;
+  restaurantAddress?: string;
+  restaurantLatitude?: number;
+  restaurantLongitude?: number;
+  totalAmount?: number;
+  currency?: string;
+  progressSteps?: TrackingProgressStep[];
 }
 
 // ==========================================
@@ -920,17 +1335,26 @@ export interface PublicTrackingResponse {
 // ==========================================
 
 /**
+ * Statut d'une table (`RestaurantTable.TableStatus`).
+ */
+export type TableStatus = 'AVAILABLE' | 'OCCUPIED' | 'RESERVED' | 'CLEANING' | 'BLOCKED' | 'MERGED';
+
+/**
  * Informations publiques d'une table pour le scan QR Code (Dine-in).
  */
 export interface PublicTableResponse {
   id: string;
-  tableNumber: string;
-  capacity: number;
-  zoneName?: string;
-  isAvailable: boolean;
-  activeSessionId?: string;
   restaurantId: string;
-  restaurantName: string;
+  /** Entier côté backend (et non chaîne). */
+  tableNumber: number;
+  name?: string;
+  capacity: number;
+  status: TableStatus;
+  shape?: string;
+  floorId?: string;
+  isActive: boolean;
+  /** Jeton à transmettre lors d'une commande dine-in. */
+  tableSessionToken?: string;
 }
 
 // ==========================================
@@ -953,18 +1377,33 @@ export interface LiveAgentSessionConfig {
   wsUrl?: string;
 
   /**
+   * Jeton de session déjà obtenu (`POST /api/public/live-agent/{slug}/session`).
+   * S'il est omis, le SDK le demande automatiquement avant d'ouvrir le socket.
+   */
+  grant?: string;
+
+  /**
    * Callback déclenché lors de la réception d'un événement textuel ou transcript.
+   * Le backend émet parfois `agent` : le SDK normalise en `assistant`.
    */
   onTranscript?: (role: 'user' | 'assistant', text: string) => void;
 
   /**
-   * Callback déclenché lors de la réception d'un chunk audio brut (PCM 16kHz).
+   * Callback déclenché à la réception du cadre `AUDIO_META`
+   * (fréquence d'échantillonnage réelle du flux, 24 kHz par défaut).
+   */
+  onAudioMeta?: (meta: LiveAgentAudioMeta) => void;
+
+  /**
+   * Callback déclenché lors de la réception d'un chunk audio brut.
+   * La fréquence réelle est fournie par `onAudioMeta` : ne pas la supposer.
    */
   onAudio?: (audioChunk: Uint8Array) => void;
 
   /**
-   * Callback déclenché lorsque l'agent vocal exécute une action storefront en direct
-   * (ex: ajout automatique d'un plat au panier, redirection vers réservation).
+   * Callback déclenché lorsque l'agent vocal propose une action storefront
+   * (ajout au panier, réservation). L'action reste **en attente** jusqu'à
+   * `session.confirmAction(actionId)`.
    */
   onClientAction?: (action: LiveAgentClientAction) => void;
 
@@ -979,6 +1418,12 @@ export interface LiveAgentSessionConfig {
   onInterrupted?: () => void;
 
   /**
+   * Callback déclenché lorsque le serveur termine la session (code 4001).
+   * Le SDK ne doit pas se reconnecter automatiquement.
+   */
+  onSessionEnded?: (reason?: string) => void;
+
+  /**
    * Callback d'erreur.
    */
   onError?: (error: Error) => void;
@@ -987,6 +1432,15 @@ export interface LiveAgentSessionConfig {
    * Callback de déconnexion.
    */
   onClose?: () => void;
+}
+
+/**
+ * Métadonnées du flux audio descendant.
+ */
+export interface LiveAgentAudioMeta {
+  encoding?: string;
+  sampleRate: number;
+  channels?: number;
 }
 
 /**
@@ -1009,6 +1463,8 @@ export type LiveAgentStatus =
 export interface LiveAgentClientAction {
   action: 'ADD_TO_CART' | 'NAVIGATE' | 'SELECT_ITEM' | string;
   payload: Record<string, any>;
+  /** Identifiant à renvoyer via `confirmAction()` pour appliquer l'action. */
+  actionId?: string;
 }
 
 /**
@@ -1017,9 +1473,11 @@ export interface LiveAgentClientAction {
 export type LiveAgentEvent =
   | 'transcript'
   | 'audio'
+  | 'audioMeta'
   | 'action'
   | 'status'
   | 'interrupted'
+  | 'sessionEnded'
   | 'error'
   | 'close';
 
@@ -1029,16 +1487,107 @@ export type LiveAgentEvent =
 export type LiveAgentEventListener<E extends LiveAgentEvent> =
   E extends 'transcript' ? (role: 'user' | 'assistant', text: string) => void :
   E extends 'audio' ? (audioChunk: Uint8Array) => void :
+  E extends 'audioMeta' ? (meta: LiveAgentAudioMeta) => void :
   E extends 'action' ? (action: LiveAgentClientAction) => void :
   E extends 'status' ? (status: LiveAgentStatus) => void :
   E extends 'interrupted' ? () => void :
+  E extends 'sessionEnded' ? (reason?: string) => void :
   E extends 'error' ? (error: Error) => void :
   E extends 'close' ? () => void :
   never;
 
 // ==========================================
+// SOURCE: security/scope.ts
+// ==========================================
+
+/**
+ * Storefront scope guard.
+ *
+ * This SDK is published for **public storefronts and the customer account
+ * area only**. It must never reach backoffice, POS, staff, driver, support or
+ * administrative endpoints — not even through the generic
+ * `client.http.request()` escape hatch.
+ *
+ * The allowlist is intentionally written as prefixes, so adding a new public
+ * storefront endpoint requires no SDK change, while any new privileged
+ * `/api/...` surface is denied by default (fail closed).
+ */
+
+/** Prefixes owned by the storefront / customer space. */
+const ALLOWED_PREFIXES: readonly string[] = [
+  '/api/public/',
+  '/api/auth/customers/',
+  '/api/customers/',
+  '/api/notifications/customers/'
+];
+
+/** Exact paths that do not fit a prefix above. */
+const ALLOWED_EXACT: ReadonlySet<string> = new Set([
+  '/api/auth/refresh',
+  '/api/vitrine/resolve-domain'
+]);
+
+/** Public vitrine reads: `/api/vitrine/{tenant}/public` and `/schema.json`. */
+const ALLOWED_VITRINE_READ = /^\/api\/vitrine\/[^/]+\/(public|schema\.json)$/;
+
+/**
+ * Collapses `.` / `..` segments, duplicate slashes, backslashes and any
+ * query/fragment. Used before matching so `/api/public/../admin/x`
+ * cannot slip past a prefix test.
+ */
+export function normalizeEndpointPath(endpoint: string): string {
+  const withoutQuery = String(endpoint ?? '')
+    .split('?')[0]
+    .split('#')[0]
+    .replace(/\\/g, '/')
+    .replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '');
+
+  const segments: string[] = [];
+  for (const segment of withoutQuery.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  return `/${segments.join('/')}`;
+}
+
+/**
+ * True when `endpoint` belongs to the storefront / customer surface.
+ */
+export function isStorefrontEndpoint(endpoint: string): boolean {
+  const rawPath = String(endpoint ?? '')
+    .split('?')[0]
+    .split('#')[0];
+
+  // Un séparateur encodé (`%2F`, `%5C`) ou un point encodé (`%2E`) peut être
+  // décodé par un proxy intermédiaire et reconstruire un `/../` : refusé par
+  // principe, aucun chemin storefront légitime n'en contient.
+  if (/%2f|%5c|%00|%2e/i.test(rawPath)) return false;
+
+  const path = normalizeEndpointPath(endpoint);
+
+  if (ALLOWED_EXACT.has(path)) return true;
+  if (ALLOWED_VITRINE_READ.test(path)) return true;
+
+  return ALLOWED_PREFIXES.some(
+    (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix)
+  );
+}
+
+// ==========================================
 // SOURCE: http/http-client.ts
 // ==========================================
+
+/**
+ * Marque partagée par les builds CJS et ESM (registre global des symboles).
+ * Elle évite qu'un simple objet `{ name: 'RestorinoApiError' }` soit pris pour
+ * une vraie erreur du SDK.
+ */
+const RESTORINO_ERROR_BRAND: unique symbol = Symbol.for('restorino.sdk.apiError');
 
 /**
  * Classe d'erreur spécialisée pour les retours API Restorino.
@@ -1048,6 +1597,27 @@ export class RestorinoApiError extends Error {
   public error: string;
   public field?: string;
   public raw: unknown;
+  /** En-tête `x-request-id` de la réponse (utile au support). */
+  public requestId?: string;
+  /** Délai demandé par `Retry-After`, en millisecondes. */
+  public retryAfterMs?: number;
+  /** @internal Marque d'identité inter-builds. */
+  public readonly [RESTORINO_ERROR_BRAND] = true;
+
+  /**
+   * Rend `instanceof` fiable entre les builds CJS (`dist/`) et ESM (`dist/esm/`).
+   *
+   * Le paquet expose deux entrées ; sans ce garde, une erreur levée par l'une
+   * n'est pas reconnue par l'autre et le `switch` de gestion d'erreur
+   * recommandé tombe silencieusement dans `default`.
+   */
+  static [Symbol.hasInstance](value: unknown): boolean {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      (value as Record<symbol, unknown>)[RESTORINO_ERROR_BRAND] === true
+    );
+  }
 
   constructor(status: number, message: string, error = 'ApiError', field?: string, raw?: unknown) {
     super(message);
@@ -1074,6 +1644,8 @@ export interface RequestOptions {
   retryDelayMs?: number;
   skipAuthRefresh?: boolean;
   signal?: AbortSignal;
+  /** En-tête `Idempotency-Key` (création de commande, réservation, paiement). */
+  idempotencyKey?: string;
 }
 
 /**
@@ -1085,12 +1657,61 @@ export class HttpClient {
   private refreshToken: string | null = null;
   private tokenStorageKey: string;
   private refreshTokenStorageKey: string;
+  private deviceFingerprintStorageKey: string;
+  private ephemeralFingerprint: string | null = null;
   private refreshPromise: Promise<boolean> | null = null;
+  /** Incrémenté à chaque fermeture de session (voir `clearTokens`). */
+  private sessionGeneration = 0;
+
+  /**
+   * Valide `baseUrl` : seuls les absolus http(s) et les chemins racine
+   * relatifs sont acceptés. Bloque `javascript:`, `data:`, `file:`, les URL
+   * protocol-relative (`//evil.com`) et les identifiants embarqués
+   * (`https://user:pass@host`).
+   */
+  private static normalizeBaseUrl(raw?: string): string {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+
+    // Chaîne vide = même origine (le storefront sert de proxy/BFF).
+    if (value === '') return '';
+
+    if (value.startsWith('//')) {
+      throw new Error('baseUrl protocol-relative interdit : précisez https://… ou un chemin relatif.');
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+      if (!/^https?:\/\//i.test(value)) {
+        throw new Error('baseUrl doit utiliser le protocole http(s).');
+      }
+      let parsed: URL;
+      try {
+        parsed = new URL(value);
+      } catch {
+        throw new Error('baseUrl invalide.');
+      }
+      if (parsed.username || parsed.password) {
+        throw new Error('baseUrl ne doit pas embarquer d’identifiants.');
+      }
+      return value.replace(/\/+$/, '');
+    }
+
+    if (!value.startsWith('/')) {
+      throw new Error('baseUrl doit être absolu (https://…) ou commencer par /.');
+    }
+
+    return value.replace(/\/+$/, '');
+  }
 
   constructor(config: RestorinoClientConfig) {
-    this.config = config;
+    this.config = {
+      ...config,
+      baseUrl: HttpClient.normalizeBaseUrl(config && config.baseUrl),
+      // Défaut explicite : le contrat storefront ne peut pas être désactivé par omission.
+      scope: config?.scope === 'all' ? 'all' : 'storefront'
+    };
     this.tokenStorageKey = config.tokenStorageKey || 'restorino_customer_token';
     this.refreshTokenStorageKey = config.refreshTokenStorageKey || 'restorino_customer_refresh_token';
+    this.deviceFingerprintStorageKey = config.deviceFingerprintStorageKey || 'restorino_device_fingerprint';
     this.token = this.loadToken();
     this.refreshToken = this.loadRefreshToken();
   }
@@ -1107,20 +1728,6 @@ export class HttpClient {
    */
   public getRefreshToken(): string | null {
     return this.refreshToken;
-  }
-
-  /**
-   * Récupère la clé API configurée.
-   */
-  public getApiKey(): string | null {
-    return this.config.apiKey || null;
-  }
-
-  /**
-   * Définit dynamiquement la clé API Vitrine.
-   */
-  public setApiKey(apiKey: string | null): void {
-    this.config.apiKey = apiKey || undefined;
   }
 
   /**
@@ -1142,7 +1749,7 @@ export class HttpClient {
   /**
    * Enregistre simultanément le token d'accès et le refresh token.
    */
-  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+  public setAuthTokens(token: string | null, refreshToken?: string | null): void {
     this.setToken(token);
     if (refreshToken !== undefined) {
       this.setRefreshToken(refreshToken);
@@ -1158,8 +1765,12 @@ export class HttpClient {
 
   /**
    * Supprime l'ensemble des tokens (accès et rafraîchissement).
+   *
+   * Incrémente la génération de session : un rafraîchissement en vol ne peut
+   * plus réinstaller des jetons après une déconnexion.
    */
   public clearTokens(): void {
+    this.sessionGeneration++;
     this.setToken(null);
     this.setRefreshToken(null);
   }
@@ -1174,26 +1785,64 @@ export class HttpClient {
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
       (safeConfig as any)[key] = value;
     }
+
+    if (typeof safeConfig.baseUrl === 'string') {
+      safeConfig.baseUrl = HttpClient.normalizeBaseUrl(safeConfig.baseUrl);
+    }
+
+    // Le périmètre ne peut pas être élargi après construction : sinon du code
+    // applicatif (ou une XSS) pourrait passer en 'all' puis appeler des routes
+    // privilégiées. Il se fixe à la création du client, pas à l'exécution.
+    delete (safeConfig as Record<string, unknown>).scope;
+
+    const previousTenant = this.config.tenantId;
+    const previousRestaurant = this.config.restaurantId;
     this.config = { ...this.config, ...safeConfig };
+
+    // Changer de contexte tenant/restaurant sans invalider la session laisse
+    // en place un JWT appartenant à l'ancien tenant (fuite inter-tenant côté UI,
+    // requêtes rejetées par le backend).
+    if (
+      (safeConfig.tenantId !== undefined && safeConfig.tenantId !== previousTenant) ||
+      (safeConfig.restaurantId !== undefined && safeConfig.restaurantId !== previousRestaurant)
+    ) {
+      this.clearTokens();
+    }
   }
 
   /**
    * Retourne la configuration active.
    */
   public getConfig(): RestorinoClientConfig {
-    return this.config;
+    return {
+      ...this.config,
+      defaultHeaders: this.config.defaultHeaders ? { ...this.config.defaultHeaders } : undefined
+    };
+  }
+
+  /**
+   * Mode de stockage effectif.
+   *
+   * Défaut = mémoire : un refresh token en `localStorage` est lisible par tout
+   * XSS. Le backend a délibérément déplacé les jetons en cookies HttpOnly ;
+   * persister un jeton en JS annulerait cette protection. Le stockage navigateur
+   * doit donc être demandé explicitement.
+   */
+  private storageMode(): 'local' | 'session' | 'memory' {
+    if (this.config.storageType === 'localStorage') return 'local';
+    if (this.config.storageType === 'sessionStorage') return 'session';
+    return 'memory';
   }
 
   private persistValue(key: string, value: string | null): void {
     if (typeof window === 'undefined') return;
+    const mode = this.storageMode();
+    if (mode === 'memory') return;
+
     try {
-      if (this.config.storageType === 'sessionStorage') {
-        if (value) sessionStorage.setItem(key, value);
-        else sessionStorage.removeItem(key);
-      } else if (this.config.storageType !== 'memory') {
-        if (value) localStorage.setItem(key, value);
-        else localStorage.removeItem(key);
-      }
+      const store = mode === 'session' ? sessionStorage : localStorage;
+      if (value) store.setItem(key, value);
+      else store.removeItem(key);
     } catch {
       // Ignorer si stockage inaccessible
     }
@@ -1201,13 +1850,12 @@ export class HttpClient {
 
   private loadStoredValue(key: string): string | null {
     if (typeof window === 'undefined') return null;
+    const mode = this.storageMode();
+    if (mode === 'memory') return null;
+
     try {
-      let raw: string | null = null;
-      if (this.config.storageType === 'sessionStorage') {
-        raw = sessionStorage.getItem(key);
-      } else if (this.config.storageType !== 'memory') {
-        raw = localStorage.getItem(key);
-      }
+      const store = mode === 'session' ? sessionStorage : localStorage;
+      const raw = store.getItem(key);
       if (raw && typeof raw === 'string') {
         const trimmed = raw.trim();
         // Prévention contre les tokens empoisonnés contenant CRLF, caractères de contrôle ou séparateurs Unicode
@@ -1239,16 +1887,19 @@ export class HttpClient {
    * Utilise une promesse partagée pour mutualiser les requêtes concurrentes.
    */
   public async tryRefreshToken(): Promise<boolean> {
-    const currentRefreshToken = this.refreshToken;
-    if (!currentRefreshToken) {
-      return false;
-    }
-
     if (this.refreshPromise) {
       return this.refreshPromise;
     }
 
+    const currentRefreshToken = this.refreshToken;
+    const cookieMode = this.credentialsMode() !== 'omit';
+
+    if (!currentRefreshToken && !cookieMode) {
+      return false;
+    }
+
     this.refreshPromise = (async () => {
+      const generation = this.sessionGeneration;
       try {
         const refreshResponse = await this.executeSingleRequest<{
           token?: string;
@@ -1256,24 +1907,39 @@ export class HttpClient {
           success?: boolean;
         }>('/api/auth/refresh', {
           method: 'POST',
-          body: { refreshToken: currentRefreshToken },
+          body: currentRefreshToken ? { refreshToken: currentRefreshToken } : undefined,
           headers: {
-            'x-refresh-token': this.sanitizeHeaderValue(currentRefreshToken)
+            'X-Auth-Scope': 'customer',
+            ...(currentRefreshToken
+              ? { 'x-refresh-token': this.sanitizeHeaderValue(currentRefreshToken) }
+              : {})
           },
           skipAuthRefresh: true,
           retries: 0
         });
+
+        // Déconnexion pendant le rafraîchissement : ne pas ressusciter les jetons.
+        if (generation !== this.sessionGeneration) {
+          return false;
+        }
+
+        // Un 200 explicite `{success:false}` n'est pas un renouvellement :
+        // le prendre pour tel rejouerait la requête avec les mêmes jetons et
+        // masquerait la vraie cause derrière un 401 secondaire.
+        if (refreshResponse && refreshResponse.success === false) {
+          return false;
+        }
 
         if (refreshResponse && refreshResponse.token) {
           this.setToken(refreshResponse.token);
           if (refreshResponse.refreshToken) {
             this.setRefreshToken(refreshResponse.refreshToken);
           }
-          return true;
-        } else if (refreshResponse && refreshResponse.success) {
-          return true;
         }
-        return false;
+
+        // Le backend rafraîchit à partir des cookies HttpOnly et répond
+        // `{success:true}` sans renvoyer de token : un 2xx = session renouvelée.
+        return true;
       } catch {
         if (this.config.onRefreshTokenFailed) {
           this.config.onRefreshTokenFailed();
@@ -1319,16 +1985,36 @@ export class HttpClient {
       }
 
       if (attempt > 0) {
-        // Backoff exponentiel avec jitter
-        const delay = Math.min(baseRetryDelay * Math.pow(2, attempt - 1) + Math.random() * 50, 10000);
-        await new Promise((resolve, reject) => {
-          const timer = setTimeout(resolve, delay);
-          if (options.signal) {
-            options.signal.addEventListener('abort', () => {
-              clearTimeout(timer);
-              reject(new RestorinoApiError(0, 'Requête annulée pendant le réessai.', 'REQUEST_ABORTED'));
-            }, { once: true });
+        // Backoff exponentiel avec jitter, borné par `Retry-After` quand le
+        // serveur en fournit un (429 / 503).
+        const backoff = baseRetryDelay * Math.pow(2, attempt - 1) + Math.random() * 50;
+        const retryAfterMs = lastError instanceof RestorinoApiError ? lastError.retryAfterMs : undefined;
+        const delay = Math.min(
+          retryAfterMs !== undefined ? Math.max(backoff, retryAfterMs) : backoff,
+          retryAfterMs !== undefined ? 60000 : 10000
+        );
+        await new Promise<void>((resolve, reject) => {
+          const signal = options.signal;
+          if (signal?.aborted) {
+            reject(new RestorinoApiError(0, 'Requête annulée pendant le réessai.', 'REQUEST_ABORTED'));
+            return;
           }
+
+          let settled = false;
+          const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new RestorinoApiError(0, 'Requête annulée pendant le réessai.', 'REQUEST_ABORTED'));
+          };
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+          }, delay);
+
+          signal?.addEventListener('abort', onAbort, { once: true });
         });
       }
 
@@ -1346,7 +2032,14 @@ export class HttpClient {
           err instanceof RestorinoApiError &&
           (err.status === 0 || err.status === 408 || err.status === 429 || err.status === 502 || err.status === 503 || err.status === 504);
 
-        if (!isTransient || attempt >= maxRetries) {
+        // 409 Conflict = verrou optimiste / course. On ne le rejoue que lorsque
+        // le rejeu est sûr : requête idempotente ou `Idempotency-Key` fournie.
+        // Rejouer un POST sans clé peut dupliquer une écriture partiellement appliquée.
+        const isConflict = err instanceof RestorinoApiError && err.status === 409;
+        const conflictReplaySafe = isIdempotent || Boolean(options.idempotencyKey);
+        const canRetryConflict = isConflict && conflictReplaySafe && attempt < 2;
+
+        if ((!isTransient && !canRetryConflict) || (!canRetryConflict && attempt >= maxRetries)) {
           throw err;
         }
       }
@@ -1374,6 +2067,17 @@ export class HttpClient {
       signal: callerSignal
     } = options;
 
+    // Périmètre : le SDK storefront ne peut appeler que la surface publique et
+    // l'espace client. Tout le reste est refusé AVANT quel appel réseau, y
+    // compris via l'échappatoire `http.request()`.
+    if (this.config.scope !== 'all' && !isStorefrontEndpoint(endpoint)) {
+      throw new RestorinoApiError(
+        403,
+        `Endpoint hors périmètre storefront : ${endpoint}`,
+        'OUT_OF_SCOPE_ENDPOINT'
+      );
+    }
+
     const controller = new AbortController();
     const effectiveTimeout = timeoutMs !== undefined ? timeoutMs : (this.config.timeoutMs ?? 30000);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1384,43 +2088,52 @@ export class HttpClient {
       }, effectiveTimeout);
     }
 
+    let onCallerAbort: (() => void) | null = null;
     if (callerSignal) {
       if (callerSignal.aborted) {
         controller.abort(callerSignal.reason);
       } else {
-        callerSignal.addEventListener('abort', () => {
-          controller.abort(callerSignal.reason);
-        }, { once: true });
+        onCallerAbort = () => controller.abort(callerSignal.reason);
+        callerSignal.addEventListener('abort', onCallerAbort, { once: true });
       }
     }
 
-    let url = this.buildUrl(endpoint, params);
+    const url = this.buildUrl(endpoint, params);
+    const isIdempotentMethod = method === 'GET' || method === 'HEAD';
 
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      ...this.config.defaultHeaders,
-      ...customHeaders
-    };
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    this.mergeHeaders(headers, this.config.defaultHeaders);
+    this.mergeHeaders(headers, customHeaders);
 
     if (!isFormData && body && method !== 'GET') {
       headers['Content-Type'] = 'application/json';
     }
 
-    if (this.config.tenantId) {
-      headers['x-tenant-id'] = this.sanitizeHeaderValue(this.config.tenantId);
+    this.applyTenantHeaders(headers);
+
+    const deviceFingerprint = this.getDeviceFingerprint();
+    if (deviceFingerprint) {
+      headers['X-Device-Fingerprint'] = deviceFingerprint;
     }
 
-    if (this.config.restaurantId) {
-      headers['x-restaurant-id'] = this.sanitizeHeaderValue(this.config.restaurantId);
+    if (options.idempotencyKey) {
+      headers['Idempotency-Key'] = this.sanitizeHeaderValue(options.idempotencyKey);
     }
 
-    if (this.config.apiKey && this.config.allowApiKeyHeader === true) {
-      headers['X-API-Key'] = this.sanitizeHeaderValue(this.config.apiKey);
+    // Double-submit CSRF : le backend publie le jeton dans le cookie lisible
+    // `XSRF-TOKEN` et exige `X-XSRF-TOKEN` sur toute mutation non exemptée.
+    if (!isIdempotentMethod && this.config.csrf !== false) {
+      const csrfToken = this.readCookie('XSRF-TOKEN');
+      if (csrfToken) {
+        headers['X-XSRF-TOKEN'] = this.sanitizeHeaderValue(csrfToken);
+      }
     }
 
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.sanitizeHeaderValue(this.token)}`;
-    } else if (requiresAuth) {
+    } else if (requiresAuth && this.credentialsMode() === 'omit') {
+      // Sans token et sans cookies, aucun moyen de s'authentifier : on échoue
+      // localement plutôt que d'émettre un appel voué au 401.
       if (timer) clearTimeout(timer);
       throw new RestorinoApiError(401, 'Authentification requise pour cette action.', 'UNAUTHORIZED');
     }
@@ -1429,11 +2142,14 @@ export class HttpClient {
       method,
       headers,
       body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
-      credentials: this.config.credentials || 'omit',
+      credentials: this.credentialsMode(),
       signal: controller.signal
     };
 
     let response: Response;
+    const startedAt = Date.now();
+    this.emitHook(() => this.config.onRequest?.({ method, path: endpoint }));
+
     try {
       response = await fetch(url, fetchOptions);
     } catch (networkError: any) {
@@ -1445,14 +2161,33 @@ export class HttpClient {
       if (timer) {
         clearTimeout(timer);
       }
+      // Sans ce retrait, un AbortSignal longue durée (partagé entre requêtes)
+      // accumule un listener par appel : fuite mémoire et avertissements
+      // MaxListeners sous Node.
+      if (callerSignal && onCallerAbort) {
+        callerSignal.removeEventListener('abort', onCallerAbort);
+      }
     }
 
-    if (response.status === 401) {
+    const requestId = response.headers.get('x-request-id') || undefined;
+    this.emitHook(() => this.config.onResponse?.({
+      method,
+      path: endpoint,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      requestId
+    }));
+
+    // Un 401 sur un endpoint public (login, reset…) ne doit jamais détruire
+    // la session en cours : on ne réagit que sur les appels authentifiés.
+    if (response.status === 401 && requiresAuth) {
       const autoRefreshEnabled = this.config.autoRefreshToken !== false;
-      if (autoRefreshEnabled && !skipAuthRefresh && this.refreshToken) {
+      const canRefresh = this.refreshToken !== null || this.credentialsMode() !== 'omit';
+
+      if (autoRefreshEnabled && !skipAuthRefresh && canRefresh) {
         const refreshed = await this.tryRefreshToken();
         if (refreshed) {
-          // Rejouer la requête protégée avec le nouveau token
+          // Rejouer une seule fois la requête protégée
           return this.executeSingleRequest<T>(endpoint, {
             ...options,
             skipAuthRefresh: true
@@ -1467,7 +2202,7 @@ export class HttpClient {
     }
 
     if (!response.ok) {
-      await this.handleErrorResponse(response);
+      await this.handleErrorResponse(response, requestId);
     }
 
     // Gestion des réponses vides (ex: 204 No Content)
@@ -1475,12 +2210,118 @@ export class HttpClient {
       return {} as T;
     }
 
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('json')) {
+      // Couvre `application/json`, `application/ld+json`, `application/problem+json`.
       return (await response.json()) as T;
     }
 
-    return (await response.text()) as unknown as T;
+    const text = await response.text();
+
+    // 200 sans corps : rien à désérialiser.
+    if (text.trim() === '') {
+      return {} as T;
+    }
+
+    // Tous les endpoints de ce SDK répondent en JSON. Un 2xx non-JSON vient
+    // d'un proxy mal configuré ou d'une page de capture : le typer en `T`
+    // produisait des `undefined` impossibles à tracer (et masquait un éventuel
+    // détournement de trafic).
+    throw new RestorinoApiError(
+      response.status,
+      `Réponse non-JSON inattendue (${contentType || 'content-type absent'}) : vérifiez la baseUrl et le proxy.`,
+      'INVALID_RESPONSE',
+      undefined,
+      text.slice(0, 2048)
+    );
+  }
+
+  private credentialsMode(): RequestCredentials {
+    return this.config.credentials || 'include';
+  }
+
+  private mergeHeaders(target: Record<string, string>, source?: Record<string, string>): void {
+    if (!source) return;
+    for (const [key, value] of Object.entries(source)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      if (value === undefined || value === null) continue;
+      const cleanKey = this.sanitizeHeaderValue(key);
+      if (!cleanKey) continue;
+      target[cleanKey] = this.sanitizeHeaderValue(value);
+    }
+  }
+
+  private static readonly UUID_PATTERN =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  /**
+   * Le backend refuse (403 TENANT_HEADER_CONFLICT) un `x-restaurant-id` qui
+   * n'est pas un UUID ou qui contredit le JWT. Les slugs partent donc dans
+   * `x-tenant-slug`, les UUID dans leur en-tête dédié.
+   */
+  private applyTenantHeaders(headers: Record<string, string>): void {
+    const tenant = this.sanitizeHeaderValue(this.config.tenantId);
+    const restaurant = this.sanitizeHeaderValue(this.config.restaurantId);
+
+    if (tenant) {
+      if (HttpClient.UUID_PATTERN.test(tenant)) headers['x-tenant-id'] = tenant;
+      else headers['x-tenant-slug'] = tenant;
+    }
+
+    if (restaurant) {
+      if (HttpClient.UUID_PATTERN.test(restaurant)) headers['x-restaurant-id'] = restaurant;
+      else if (!headers['x-tenant-slug']) headers['x-tenant-slug'] = restaurant;
+    }
+  }
+
+  private readCookie(name: string): string | null {
+    if (typeof document === 'undefined') return null;
+    try {
+      const prefix = `${name}=`;
+      for (const part of document.cookie.split(';')) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith(prefix)) {
+          return decodeURIComponent(trimmed.slice(prefix.length));
+        }
+      }
+    } catch {
+      // Cookie inaccessible (sandbox, iframe) : on continue sans CSRF header.
+    }
+    return null;
+  }
+
+  /**
+   * Identifiant d'appareil stable, requis pour que le refresh token reste
+   * lié à ce navigateur (le backend révoque toute la famille de tokens en cas
+   * de mismatch, y compris quand il retombe sur IP + User-Agent).
+   */
+  private getDeviceFingerprint(): string | null {
+    const configured = this.sanitizeHeaderValue(this.config.deviceFingerprint);
+    if (configured) return configured;
+
+    if (this.ephemeralFingerprint) return this.ephemeralFingerprint;
+    if (typeof window === 'undefined') return null;
+
+    const stored = this.loadStoredValue(this.deviceFingerprintStorageKey);
+    if (stored) return stored;
+
+    const generated = this.generateDeviceFingerprint();
+    this.persistValue(this.deviceFingerprintStorageKey, generated);
+    this.ephemeralFingerprint = generated;
+    return generated;
+  }
+
+  private generateDeviceFingerprint(): string {
+    const cryptoObj = (globalThis as any)?.crypto;
+    if (cryptoObj?.randomUUID) {
+      return cryptoObj.randomUUID();
+    }
+    if (cryptoObj?.getRandomValues) {
+      const bytes = new Uint8Array(16);
+      cryptoObj.getRandomValues(bytes);
+      return Array.from(bytes, (b: number) => b.toString(16).padStart(2, '0')).join('');
+    }
+    return `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
   }
 
   private buildUrl(endpoint: string, params?: Record<string, any>): string {
@@ -1499,6 +2340,11 @@ export class HttpClient {
     }
     // Empêcher les URL protocol-relative (ex: "//evil.com")
     cleanEndpoint = cleanEndpoint.replace(/^\/+/, '/');
+
+    // Éviter /api/api/... quand la baseUrl porte déjà le préfixe du proxy Next.js.
+    if (/\/api$/i.test(base) && /^\/api\//i.test(cleanEndpoint)) {
+      cleanEndpoint = cleanEndpoint.replace(/^\/api/i, '');
+    }
 
     let fullUrl = `${base}${cleanEndpoint}`;
 
@@ -1522,7 +2368,32 @@ export class HttpClient {
     return fullUrl;
   }
 
-  private async handleErrorResponse(response: Response): Promise<never> {
+  private emitHook(run: () => void): void {
+    try {
+      run();
+    } catch {
+      // Un hook d'observation ne doit jamais casser une requête.
+    }
+  }
+
+  private parseRetryAfter(response: Response): number | undefined {
+    const raw = response.headers.get('retry-after');
+    if (!raw) return undefined;
+
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, 60000);
+    }
+
+    const date = Date.parse(raw);
+    if (Number.isFinite(date)) {
+      return Math.min(Math.max(date - Date.now(), 0), 60000);
+    }
+
+    return undefined;
+  }
+
+  private async handleErrorResponse(response: Response, requestId?: string): Promise<never> {
     let errorData: any = {};
     try {
       const parsed = await response.json();
@@ -1555,7 +2426,26 @@ export class HttpClient {
       (errorData && typeof errorData.error === 'string' && errorData.error) || 'API_ERROR';
     const field = errorData && typeof errorData.field === 'string' ? errorData.field : undefined;
 
-    throw new RestorinoApiError(response.status, message, errorType, field, errorData);
+    // Borner le corps d'erreur conservé en mémoire : une réponse volumineuse
+    // (ou piégée) ne doit pas saturer la heap du client.
+    let rawPayload: unknown = errorData;
+    try {
+      if (JSON.stringify(errorData).length > 8192) {
+        rawPayload = { message };
+      }
+    } catch {
+      rawPayload = { message };
+    }
+
+    const error = new RestorinoApiError(response.status, message, errorType, field, rawPayload);
+    error.requestId = requestId;
+
+    const retryAfterMs = this.parseRetryAfter(response);
+    if (retryAfterMs !== undefined) {
+      error.retryAfterMs = retryAfterMs;
+    }
+
+    throw error;
   }
 }
 
@@ -1567,19 +2457,43 @@ export class AuthModule {
   constructor(private http: HttpClient) {}
 
   /**
+   * `restaurantId` est `@NotBlank` côté backend : échouer localement avec un
+   * message clair évite de transformer une erreur de configuration en 400 opaque.
+   */
+  private resolveRestaurantId(override?: string): string {
+    const restaurantId = override || this.http.getConfig().restaurantId;
+    if (!restaurantId) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId est requis : fournissez-le à la configuration du client ou à l’appel.',
+        'MISSING_RESTAURANT_ID'
+      );
+    }
+    return restaurantId;
+  }
+
+  /**
+   * En mode cookies (défaut) le backend ne renvoie aucun token dans le corps :
+   * son absence n'est pas un échec. On ne stocke que si un jeton est présent
+   * (compatibilité avec les backends en mode Bearer).
+   */
+  private adoptSession(response?: CustomerAuthResponse | null): void {
+    if (response && response.token) {
+      this.http.setAuthTokens(response.token, response.refreshToken ?? undefined);
+    }
+  }
+
+  /**
    * Connexion d'un compte client (Email + Mot de passe).
    */
   public async login(data: CustomerLoginRequest): Promise<CustomerAuthResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     const response = await this.http.request<CustomerAuthResponse>('/api/auth/customers/login', {
       method: 'POST',
       body: { ...data, restaurantId }
     });
 
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken);
-    }
-
+    this.adoptSession(response);
     return response;
   }
 
@@ -1587,16 +2501,13 @@ export class AuthModule {
    * Inscription d'un nouveau compte client pour le restaurant.
    */
   public async register(data: CustomerRegisterRequest): Promise<CustomerAuthResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     const response = await this.http.request<CustomerAuthResponse>('/api/auth/customers/register', {
       method: 'POST',
       body: { ...data, restaurantId }
     });
 
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken);
-    }
-
+    this.adoptSession(response);
     return response;
   }
 
@@ -1604,37 +2515,43 @@ export class AuthModule {
    * Connexion ou auto-inscription d'un client via Google Sign-In (Token ID Google).
    */
   public async loginWithGoogle(data: CustomerGoogleAuthRequest): Promise<CustomerAuthResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     const response = await this.http.request<CustomerAuthResponse>('/api/auth/customers/google', {
       method: 'POST',
       body: { ...data, restaurantId }
     });
 
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken);
-    }
-
+    this.adoptSession(response);
     return response;
   }
 
   /**
-   * Rafraîchissement explicite du token d'authentification client.
+   * Rafraîchissement explicite de la session client.
+   *
+   * Délègue au transport : le backend renouvelle à partir des cookies HttpOnly
+   * et répond `{ success: true }` sans token. Le paramètre n'est conservé que
+   * pour les backends exigeant un refresh token dans le corps.
    */
   public async refreshToken(refreshToken?: string): Promise<CustomerRefreshTokenResponse> {
-    const tokenToRefresh = refreshToken || this.http.getRefreshToken();
-    const response = await this.http.request<CustomerRefreshTokenResponse>('/api/auth/refresh', {
-      method: 'POST',
-      body: tokenToRefresh ? { refreshToken: tokenToRefresh } : undefined,
-      headers: tokenToRefresh ? { 'x-refresh-token': tokenToRefresh } : {},
-      skipAuthRefresh: true,
-      retries: 0
-    });
-
-    if (response && response.token) {
-      this.http.setAuthTokens(response.token, response.refreshToken || tokenToRefresh);
+    const previousRefreshToken = refreshToken || this.http.getRefreshToken();
+    if (previousRefreshToken && !this.http.getRefreshToken()) {
+      this.http.setRefreshToken(previousRefreshToken);
     }
 
-    return response;
+    const refreshed = await this.http.tryRefreshToken();
+    if (!refreshed) {
+      throw new RestorinoApiError(
+        401,
+        'Session expirée : impossible de rafraîchir le jeton.',
+        'REFRESH_FAILED'
+      );
+    }
+
+    return {
+      success: true,
+      token: this.http.getToken() ?? undefined,
+      refreshToken: this.http.getRefreshToken() ?? undefined
+    };
   }
 
   /**
@@ -1699,7 +2616,7 @@ export class AuthModule {
    * Demande de réinitialisation de mot de passe (Anti-énumération).
    */
   public async requestPasswordReset(email: string, restaurantId?: string): Promise<MessageResponse> {
-    const targetRestaurantId = restaurantId || this.http.getConfig().restaurantId;
+    const targetRestaurantId = this.resolveRestaurantId(restaurantId);
     return this.http.request<MessageResponse>('/api/customers/password/reset-request', {
       method: 'POST',
       body: { email, restaurantId: targetRestaurantId } as PasswordResetRequest
@@ -1707,10 +2624,10 @@ export class AuthModule {
   }
 
   /**
-   * Confirmation de réinitialisation de mot de passe avec code OTP / token.
+   * Confirmation de réinitialisation de mot de passe avec le code OTP à 6 chiffres.
    */
   public async confirmPasswordReset(data: PasswordResetConfirmRequest): Promise<MessageResponse> {
-    const restaurantId = data.restaurantId || this.http.getConfig().restaurantId;
+    const restaurantId = this.resolveRestaurantId(data.restaurantId);
     return this.http.request<MessageResponse>('/api/customers/password/reset-confirm', {
       method: 'POST',
       body: { ...data, restaurantId }
@@ -1749,8 +2666,8 @@ export class CustomerModule {
   /**
    * Récupère l'historique paginé des commandes du client.
    */
-  public async getOrders(page = 0, size = 10): Promise<Page<OrderResponse>> {
-    return this.http.request<Page<OrderResponse>>('/api/customers/orders', {
+  public async getOrders(page = 0, size = 10): Promise<Page<CustomerOrder>> {
+    return this.http.request<Page<CustomerOrder>>('/api/customers/orders', {
       method: 'GET',
       params: { page, size },
       requiresAuth: true
@@ -1760,8 +2677,8 @@ export class CustomerModule {
   /**
    * Récupère le détail d'une commande passée par le client.
    */
-  public async getOrderDetails(orderId: string): Promise<OrderResponse> {
-    return this.http.request<OrderResponse>(`/api/customers/orders/${encodeURIComponent(orderId)}`, {
+  public async getOrderDetails(orderId: string): Promise<CustomerOrder> {
+    return this.http.request<CustomerOrder>(`/api/customers/orders/${encodeURIComponent(orderId)}`, {
       method: 'GET',
       requiresAuth: true
     });
@@ -1896,10 +2813,12 @@ export class CustomerModule {
 
   /**
    * Suppléments commandables (sauces, extras) du menu du restaurant.
+   * Le backend accepte un filtre optionnel `productId`.
    */
-  public async getMenuSupplements(): Promise<ProductOption[]> {
+  public async getMenuSupplements(productId?: string): Promise<ProductOption[]> {
     return this.http.request<ProductOption[]>('/api/customers/menu/supplements', {
       method: 'GET',
+      params: productId ? { productId } : undefined,
       requiresAuth: true
     });
   }
@@ -1918,9 +2837,12 @@ export class CustomerModule {
   /**
    * Carte des boissons du restaurant.
    */
-  public async getMenuBeverages(): Promise<ProductOption[]> {
+  public async getMenuBeverages(
+    filters?: { type?: string; size?: string; alcoholic?: boolean }
+  ): Promise<ProductOption[]> {
     return this.http.request<ProductOption[]>('/api/customers/menu/beverages', {
       method: 'GET',
+      params: filters,
       requiresAuth: true
     });
   }
@@ -1964,6 +2886,8 @@ export class CustomerModule {
 // SOURCE: modules/loyalty.ts
 // ==========================================
 
+const RESTAURANT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export class LoyaltyModule {
   constructor(private http: HttpClient) {}
 
@@ -1999,12 +2923,22 @@ export class LoyaltyModule {
 
   /**
    * Récupère les informations publiques de la campagne d'avis Google du restaurant.
+   * Le paramètre de chemin doit être un UUID (un slug produit un 400).
    */
   public async getGoogleReviewInfo(restaurantId?: string): Promise<GoogleReviewInfoResponse> {
     const targetId = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<GoogleReviewInfoResponse>(`/api/public/restaurants/${encodeURIComponent(targetId || '')}/google-review-info`, {
-      method: 'GET'
-    });
+    if (!targetId || !RESTAURANT_UUID_PATTERN.test(targetId)) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId (UUID) est requis pour consulter la campagne d’avis Google.',
+        'INVALID_RESTAURANT_ID'
+      );
+    }
+
+    return this.http.request<GoogleReviewInfoResponse>(
+      `/api/public/restaurants/${encodeURIComponent(targetId)}/google-review-info`,
+      { method: 'GET' }
+    );
   }
 
   /**
@@ -2057,11 +2991,39 @@ export class LoyaltyModule {
 export class VitrineModule {
   constructor(private http: HttpClient) {}
 
+  private resolveIdentifier(override?: string): string {
+    const target = override || this.http.getConfig().restaurantId;
+    if (!target) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId est requis : fournissez-le à la configuration du client ou à l’appel.',
+        'MISSING_RESTAURANT_ID'
+      );
+    }
+    return target;
+  }
+
+  /**
+   * Identifiant de vitrine (tenant, slug ou restaurant) obligatoire : sans lui
+   * le chemin contient un segment vide et échoue en 404 opaque.
+   */
+  private resolveTenantTarget(override?: string): string {
+    const target = override || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
+    if (!target) {
+      throw new RestorinoApiError(
+        400,
+        'tenantId (ou restaurantId) est requis pour identifier la vitrine.',
+        'MISSING_TENANT_ID'
+      );
+    }
+    return target;
+  }
+
   /**
    * Recherche multicritère de restaurants (proximité GPS, spécialité, ville).
    */
-  public async search(filter: RestaurantSearchRequest): Promise<Page<PublicVitrineResponse>> {
-    return this.http.request<Page<PublicVitrineResponse>>('/api/public/restaurants/search', {
+  public async search(filter: RestaurantSearchRequest): Promise<Page<RestaurantSearchResponse>> {
+    return this.http.request<Page<RestaurantSearchResponse>>('/api/public/restaurants/search', {
       method: 'POST',
       body: filter
     });
@@ -2070,8 +3032,8 @@ export class VitrineModule {
   /**
    * Liste des restaurants les plus populaires de la plateforme.
    */
-  public async getPopular(): Promise<PublicVitrineResponse[]> {
-    return this.http.request<PublicVitrineResponse[]>('/api/public/restaurants/popular', {
+  public async getPopular(): Promise<RestaurantSearchResponse[]> {
+    return this.http.request<RestaurantSearchResponse[]>('/api/public/restaurants/popular', {
       method: 'GET'
     });
   }
@@ -2097,12 +3059,13 @@ export class VitrineModule {
 
   /**
    * Vérifie si des coordonnées GPS se situent dans la zone de livraison du restaurant.
+   * Le backend attend `latitude` / `longitude` (les noms `lat`/`lng` produisaient un 400).
    */
   public async checkDeliveryZone(latitude: number, longitude: number, restaurantId?: string): Promise<DeliveryZoneCheckResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<DeliveryZoneCheckResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/delivery-check`, {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<DeliveryZoneCheckResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/delivery-check`, {
       method: 'GET',
-      params: { lat: latitude, lng: longitude }
+      params: { latitude, longitude }
     });
   }
 
@@ -2110,18 +3073,20 @@ export class VitrineModule {
    * Statut d'ouverture temps réel du restaurant.
    */
   public async getStatus(restaurantId?: string): Promise<RestaurantStatusResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<RestaurantStatusResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/status`, {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<RestaurantStatusResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/status`, {
       method: 'GET'
     });
   }
 
   /**
    * Avis clients publics du restaurant.
+   * Le backend renvoie un objet `{reviews, totalReviews, averageRating, ...}`,
+   * pas une `Page` Spring.
    */
-  public async getReviews(restaurantId?: string, page = 0, size = 10): Promise<Page<TestimonialResponse>> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<Page<TestimonialResponse>>(`/api/public/restaurants/${encodeURIComponent(target || '')}/reviews`, {
+  public async getReviews(restaurantId?: string, page = 0, size = 10): Promise<RestaurantReviewsResponse> {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<RestaurantReviewsResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/reviews`, {
       method: 'GET',
       params: { page, size }
     });
@@ -2131,8 +3096,8 @@ export class VitrineModule {
    * Carte / Menu public complet du restaurant.
    */
   public async getMenu(restaurantId?: string): Promise<PublicMenuResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<PublicMenuResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/menu`, {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<PublicMenuResponse>(`/api/public/restaurants/${encodeURIComponent(target)}/menu`, {
       method: 'GET'
     });
   }
@@ -2141,8 +3106,8 @@ export class VitrineModule {
    * Récupère une catégorie et ses plats par slug SEO (ex: 'burgers').
    */
   public async getCategoryBySlug(categorySlug: string, tenantOrSlug?: string): Promise<PublicCategory> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<PublicCategory>(`/api/public/menu/${encodeURIComponent(tenant || '')}/${encodeURIComponent(categorySlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<PublicCategory>(`/api/public/menu/${encodeURIComponent(tenant)}/${encodeURIComponent(categorySlug)}`, {
       method: 'GET'
     });
   }
@@ -2151,8 +3116,8 @@ export class VitrineModule {
    * Récupère la fiche détaillée d'un plat par slug SEO (ex: 'double-cheese-burger').
    */
   public async getProductBySlug(categorySlug: string, productSlug: string, tenantOrSlug?: string): Promise<PublicProduct> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<PublicProduct>(`/api/public/menu/${encodeURIComponent(tenant || '')}/${encodeURIComponent(categorySlug)}/${encodeURIComponent(productSlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<PublicProduct>(`/api/public/menu/${encodeURIComponent(tenant)}/${encodeURIComponent(categorySlug)}/${encodeURIComponent(productSlug)}`, {
       method: 'GET'
     });
   }
@@ -2161,8 +3126,8 @@ export class VitrineModule {
    * Récupère les métadonnées SEO pour l'accueil de la vitrine.
    */
   public async getSeoMeta(tenantOrSlug?: string): Promise<SeoMetaTagsResponse> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant || '')}/meta`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant)}/meta`, {
       method: 'GET'
     });
   }
@@ -2171,8 +3136,8 @@ export class VitrineModule {
    * Métadonnées SEO d'une catégorie du menu (par slug).
    */
   public async getCategorySeoMeta(categorySlug: string, tenantOrSlug?: string): Promise<SeoMetaTagsResponse> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant || '')}/meta/category/${encodeURIComponent(categorySlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant)}/meta/category/${encodeURIComponent(categorySlug)}`, {
       method: 'GET'
     });
   }
@@ -2181,8 +3146,8 @@ export class VitrineModule {
    * Métadonnées SEO d'un produit du menu (par slug).
    */
   public async getProductSeoMeta(productSlug: string, tenantOrSlug?: string): Promise<SeoMetaTagsResponse> {
-    const tenant = tenantOrSlug || this.http.getConfig().restaurantId;
-    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant || '')}/meta/product/${encodeURIComponent(productSlug)}`, {
+    const tenant = this.resolveTenantTarget(tenantOrSlug);
+    return this.http.request<SeoMetaTagsResponse>(`/api/public/seo/${encodeURIComponent(tenant)}/meta/product/${encodeURIComponent(productSlug)}`, {
       method: 'GET'
     });
   }
@@ -2199,80 +3164,52 @@ export class VitrineModule {
 
   /**
    * Récupère les témoignages validés par identifiant UUID du restaurant.
+   * Le backend renvoie une `Page` Spring, pas un tableau.
    */
-  public async getTestimonials(restaurantId?: string): Promise<TestimonialResponse[]> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<TestimonialResponse[]>(`/api/public/testimonials/${encodeURIComponent(target || '')}`, {
-      method: 'GET'
-    });
-  }
-
-  /**
-   * Valide la clé API Vitrine via le backend Restorino (POST /api/vitrine/api-keys/validate).
-   * Vérifie la validité, l'expiration, l'état actif et les permissions (READ, WRITE, etc.).
-   */
-  public async validateApiKey(apiKey?: string): Promise<ValidateApiKeyResponse> {
-    const key = apiKey || this.http.getConfig().apiKey;
-    const customHeaders: Record<string, string> = {};
-    if (apiKey && apiKey !== this.http.getConfig().apiKey) {
-      customHeaders['X-API-Key'] = apiKey;
-    }
-    return this.http.request<ValidateApiKeyResponse>('/api/vitrine/api-keys/validate', {
-      method: 'POST',
-      body: key ? { apiKey: key } : undefined,
-      headers: Object.keys(customHeaders).length > 0 ? customHeaders : undefined,
-      skipAuthRefresh: true,
-      retries: 0
-    });
-  }
-
-  /**
-   * Récupère la configuration vitrine complète authentifiée par clé API (GET /api/vitrine/{tenantId}/config).
-   * L'en-tête X-API-Key est obligatoire pour les applications storefront externes (Lovable, React, Next.js).
-   */
-  public async getConfig(tenantIdOrSubdomain?: string): Promise<VitrineConfigResponse> {
-    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
-    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target || '')}/config`, {
-      method: 'GET'
+  public async getTestimonials(restaurantId?: string, page = 0, size = 10): Promise<Page<TestimonialResponse>> {
+    const target = this.resolveIdentifier(restaurantId);
+    return this.http.request<Page<TestimonialResponse>>(`/api/public/testimonials/${encodeURIComponent(target)}`, {
+      method: 'GET',
+      params: { page, size }
     });
   }
 
   /**
    * Récupère la configuration vitrine publique publiée (GET /api/vitrine/{tenantIdOrSubdomain}/public).
-   * Endpoint public direct sans clé API requise.
+   * Endpoint public direct, sans clé API ni session.
    */
   public async getPublicConfig(tenantIdOrSubdomain?: string): Promise<VitrineConfigResponse> {
-    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
-    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target || '')}/public`, {
+    const target = this.resolveTenantTarget(tenantIdOrSubdomain);
+    return this.http.request<VitrineConfigResponse>(`/api/vitrine/${encodeURIComponent(target)}/public`, {
       method: 'GET'
     });
   }
 
   /**
-   * Liste des templates de vitrine disponibles (GET /api/vitrine/templates).
-   */
-  public async getTemplates(): Promise<TemplateResponse[]> {
-    return this.http.request<TemplateResponse[]>('/api/vitrine/templates', {
-      method: 'GET'
-    });
-  }
-
-  /**
-   * Résout un nom de domaine ou sous-domaine vers son tenantId (GET /api/vitrine/resolve-domain?domain=...).
+   * Résout un nom de domaine ou sous-domaine vers son tenantId.
+   * Le backend répond 404 pour un domaine inconnu : on le traduit en
+   * `{ found: false }` plutôt que de lever une exception.
    */
   public async resolveCustomDomain(domain: string): Promise<DomainResolutionResponse> {
-    return this.http.request<DomainResolutionResponse>('/api/vitrine/resolve-domain', {
-      method: 'GET',
-      params: { domain }
-    });
+    try {
+      return await this.http.request<DomainResolutionResponse>('/api/vitrine/resolve-domain', {
+        method: 'GET',
+        params: { domain }
+      });
+    } catch (err) {
+      if (err instanceof RestorinoApiError && err.status === 404) {
+        return { found: false, domain };
+      }
+      throw err;
+    }
   }
 
   /**
    * Récupère le bundle JSON-LD Schema.org (@graph) officiel du site vitrine pour Google Rich Results.
    */
   public async getSchemaOrg(tenantIdOrSubdomain?: string): Promise<Record<string, any>> {
-    const target = tenantIdOrSubdomain || this.http.getConfig().tenantId || this.http.getConfig().restaurantId;
-    return this.http.request<Record<string, any>>(`/api/vitrine/${encodeURIComponent(target || '')}/schema.json`, {
+    const target = this.resolveTenantTarget(tenantIdOrSubdomain);
+    return this.http.request<Record<string, any>>(`/api/vitrine/${encodeURIComponent(target)}/schema.json`, {
       method: 'GET'
     });
   }
@@ -2286,25 +3223,81 @@ export class OrdersModule {
   constructor(private http: HttpClient) {}
 
   /**
-   * Passage d'une commande publique depuis la vitrine.
+   * Un `restaurantId` vide produit une URL `//orders` et un 404 opaque.
    */
-  public async placeOrder(order: VitrineOrderRequest, restaurantId?: string): Promise<OrderResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<OrderResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders`, {
-      method: 'POST',
-      body: order
-    });
+  private resolveRestaurantId(override?: string): string {
+    const target = override || this.http.getConfig().restaurantId;
+    if (!target) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId est requis : fournissez-le à la configuration du client ou à l’appel.',
+        'MISSING_RESTAURANT_ID'
+      );
+    }
+    return target;
+  }
+
+  private generateIdempotencyKey(): string {
+    const cryptoObj = (globalThis as any)?.crypto;
+    if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+    return `ord-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
   }
 
   /**
-   * Estimation des frais et délais de livraison pour une adresse donnée.
+   * Passage d'une commande publique depuis la vitrine.
    */
-  public async estimateDelivery(location: CustomerLocation, restaurantId?: string): Promise<DeliveryEstimateResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<DeliveryEstimateResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/estimate-delivery`, {
-      method: 'POST',
-      body: location
-    });
+  public async placeOrder(order: VitrineOrderRequest, restaurantId?: string): Promise<OrderResponse> {
+    const target = this.resolveRestaurantId(restaurantId);
+    // `idempotencyKey` est un détail de transport : il ne part pas dans le corps.
+    const { idempotencyKey, ...payload } = order;
+
+    return this.http.request<OrderResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders`,
+      {
+        method: 'POST',
+        body: payload,
+        // Rejouer une création de commande sans clé peut la dupliquer.
+        idempotencyKey: idempotencyKey ?? this.generateIdempotencyKey()
+      }
+    );
+  }
+
+  /**
+   * Estimation des frais et délais de livraison.
+   *
+   * L'API attend `{ latitude, longitude, address }`. L'ancienne forme
+   * `CustomerLocation` (`street`) reste acceptée et convertie.
+   */
+  public async estimateDelivery(
+    location: EstimateDeliveryRequest | CustomerLocation,
+    restaurantId?: string
+  ): Promise<DeliveryEstimateResponse> {
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<DeliveryEstimateResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/estimate-delivery`,
+      { method: 'POST', body: this.toEstimateRequest(location) }
+    );
+  }
+
+  private toEstimateRequest(location: EstimateDeliveryRequest | CustomerLocation): EstimateDeliveryRequest {
+    const legacy = location as CustomerLocation & { street?: string };
+    const address = (location as EstimateDeliveryRequest).address || legacy.street || '';
+
+    if (!address || address.trim().length < 10) {
+      throw new RestorinoApiError(
+        400,
+        'Une adresse complète (10 caractères minimum) est requise pour estimer la livraison.',
+        'MISSING_ADDRESS'
+      );
+    }
+
+    return {
+      latitude: legacy.latitude,
+      longitude: legacy.longitude,
+      address,
+      preferredTime: (location as EstimateDeliveryRequest).preferredTime,
+      orderValue: (location as EstimateDeliveryRequest).orderValue
+    };
   }
 
   /**
@@ -2315,14 +3308,17 @@ export class OrdersModule {
     verification: OrderTrackingVerification,
     restaurantId?: string
   ): Promise<OrderTrackingResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<OrderTrackingResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/${encodeURIComponent(orderId)}/track`, {
-      method: 'GET',
-      params: {
-        customerEmail: verification.customerEmail,
-        customerPhone: verification.customerPhone
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<OrderTrackingResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/${encodeURIComponent(orderId)}/track`,
+      {
+        method: 'GET',
+        params: {
+          customerEmail: verification.customerEmail,
+          customerPhone: verification.customerPhone
+        }
       }
-    });
+    );
   }
 
   /**
@@ -2333,130 +3329,184 @@ export class OrdersModule {
     verification: CancelOrderRequest,
     restaurantId?: string
   ): Promise<OrderResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<OrderResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/${encodeURIComponent(orderId)}/cancel`, {
-      method: 'POST',
-      params: {
-        customerEmail: verification.customerEmail,
-        customerPhone: verification.customerPhone,
-        reason: verification.reason
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<OrderResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/${encodeURIComponent(orderId)}/cancel`,
+      {
+        method: 'POST',
+        params: {
+          customerEmail: verification.customerEmail,
+          customerPhone: verification.customerPhone,
+          reason: verification.reason
+        }
       }
-    });
+    );
   }
 
   /**
    * Suivi one-click via token signé (lien SMS/email).
    */
   public async trackOrderByToken(token: string, restaurantId?: string): Promise<OrderTrackingResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<OrderTrackingResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/track-link`, {
-      method: 'GET',
-      params: { token }
-    });
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<OrderTrackingResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/track-link`,
+      { method: 'GET', params: { token } }
+    );
   }
 
   /**
    * Menu du restaurant pour la page de commande.
    */
   public async getOrderingMenu(restaurantId?: string): Promise<PublicMenuResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<PublicMenuResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/menu`, {
-      method: 'GET'
-    });
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<PublicMenuResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/menu`,
+      { method: 'GET' }
+    );
   }
 
   /**
    * Paramètres publics du restaurant (taxe, couleurs, devise, logo).
    */
   public async getSettings(restaurantId?: string): Promise<PublicRestaurantSettingsResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<PublicRestaurantSettingsResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/settings`, {
-      method: 'GET'
-    });
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<PublicRestaurantSettingsResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/settings`,
+      { method: 'GET' }
+    );
   }
 
   /**
    * Réservation de table publique en ligne.
    */
-  public async createReservation(reservation: CreateReservationRequest, restaurantId?: string): Promise<ReservationResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<ReservationResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/reservations`, {
-      method: 'POST',
-      body: reservation
-    });
+  public async createReservation(
+    reservation: CreateReservationRequest,
+    restaurantId?: string
+  ): Promise<ReservationResponse> {
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<ReservationResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/reservations`,
+      {
+        method: 'POST',
+        body: reservation,
+        idempotencyKey: this.generateIdempotencyKey()
+      }
+    );
   }
 
   /**
-   * Suivi d'une réservation de table par son numéro avec vérification 2 facteurs (email + phone).
+   * Suivi d'une réservation de table par son numéro (email + phone).
    */
   public async trackReservation(
     reservationNumber: string,
     verification: ReservationTrackingVerification,
     restaurantId?: string
   ): Promise<ReservationResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<ReservationResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/reservations/${encodeURIComponent(reservationNumber)}/track`, {
-      method: 'GET',
-      params: {
-        customerEmail: verification.customerEmail,
-        customerPhone: verification.customerPhone
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<ReservationResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/reservations/${encodeURIComponent(reservationNumber)}/track`,
+      {
+        method: 'GET',
+        params: {
+          customerEmail: verification.customerEmail,
+          customerPhone: verification.customerPhone
+        }
       }
-    });
+    );
   }
 
   /**
-   * Annulation d'une réservation de table par le client avec vérification 2 facteurs (email + phone).
+   * Annulation d'une réservation de table par le client (email + phone).
    */
   public async cancelReservation(
     reservationNumber: string,
     verification: CancelReservationRequest,
     restaurantId?: string
   ): Promise<ReservationResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<ReservationResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/orders/reservations/${encodeURIComponent(reservationNumber)}/cancel`, {
-      method: 'POST',
-      params: {
-        customerEmail: verification.customerEmail,
-        customerPhone: verification.customerPhone,
-        reason: verification.reason
+    const target = this.resolveRestaurantId(restaurantId);
+    return this.http.request<ReservationResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/orders/reservations/${encodeURIComponent(reservationNumber)}/cancel`,
+      {
+        method: 'POST',
+        params: {
+          customerEmail: verification.customerEmail,
+          customerPhone: verification.customerPhone,
+          reason: verification.reason
+        }
       }
-    });
+    );
   }
 
   /**
-   * Surveille en direct l'état d'avancement d'une commande (polling intelligent avec arrêt automatique).
-   * Retourne une fonction de désabonnement / arrêt du flux.
+   * Surveille l'avancement d'une commande (polling avec arrêt automatique).
+   *
+   * Le backend n'expose pas `isDelivered` : l'arrêt se fait sur le statut réel.
+   * `PENDING_VERIFICATION` (paiement cash à confirmer) est un état d'attente
+   * légitime, pas un état terminal.
    */
   public watchOrder(
     orderId: string,
     verification: OrderTrackingVerification,
     callback: (status: OrderTrackingResponse) => void,
-    options: { intervalMs?: number; onError?: (err: Error) => void; restaurantId?: string } = {}
+    options: {
+      intervalMs?: number;
+      onError?: (err: Error) => void;
+      restaurantId?: string;
+      /** Durée maximale de surveillance (défaut : 30 min). */
+      maxDurationMs?: number;
+      /** Nombre d'erreurs consécutives avant abandon (défaut : 5). */
+      maxConsecutiveErrors?: number;
+      /** Sous Node, ne pas retenir la boucle d'événements (défaut : false). */
+      unrefTimers?: boolean;
+    } = {}
   ): () => void {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let consecutiveErrors = 0;
     const interval = Math.max(options.intervalMs ?? 5000, 50);
+    const maxDuration = options.maxDurationMs ?? 30 * 60 * 1000;
+    const maxErrors = Math.max(1, options.maxConsecutiveErrors ?? 5);
+    const startedAt = Date.now();
+    const terminalStatuses: OrderStatus[] = ['DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUSED', 'REFUNDED'];
+
+    const schedule = (delayMs: number): void => {
+      timer = setTimeout(poll, delayMs);
+      // Sous Node, un timer armé retient la boucle d'événements : sans unref,
+      // un script qui surveille une commande ne se termine jamais.
+      if (options.unrefTimers) {
+        (timer as unknown as { unref?: () => void }).unref?.();
+      }
+    };
 
     const poll = async () => {
       if (stopped) return;
       try {
         const tracking = await this.trackOrder(orderId, verification, options.restaurantId);
         if (stopped) return;
+        consecutiveErrors = 0;
         callback(tracking);
-        if (tracking.isDelivered || tracking.status === 'DELIVERED' || tracking.status === 'CANCELLED') {
+        if (terminalStatuses.includes(tracking.status)) {
           return;
         }
       } catch (err: any) {
+        consecutiveErrors++;
         if (!stopped && options.onError) {
           options.onError(err instanceof Error ? err : new Error(String(err)));
         }
+        // Abandonner après N échecs : continuer ne fait que marteler un
+        // endpoint protégé par rate limiting.
+        if (stopped || consecutiveErrors >= maxErrors) {
+          return;
+        }
       }
-      if (!stopped) {
-        timer = setTimeout(poll, interval);
+      // Borne la durée totale : sans elle, un statut jamais terminal fait
+      // tourner le polling indéfiniment (batterie, réseau, quota).
+      if (!stopped && Date.now() - startedAt < maxDuration) {
+        schedule(interval);
       }
     };
 
-    timer = setTimeout(poll, 0);
+    schedule(0);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -2482,37 +3532,66 @@ export class DeliveryModule {
 
   /**
    * Surveille en direct la position GPS et l'état d'avancement du coursier.
+   *
+   * Le backend renvoie `deliveryStatus` (et non `status`) : le test d'arrêt
+   * lisait un champ toujours `undefined` et bouclait indéfiniment.
    * Retourne une fonction de désabonnement / arrêt du flux.
    */
   public watchDelivery(
     trackingNumber: string,
     callback: (delivery: PublicTrackingResponse) => void,
-    options: { intervalMs?: number; onError?: (err: Error) => void } = {}
+    options: {
+      intervalMs?: number;
+      onError?: (err: Error) => void;
+      /** Durée maximale de surveillance (défaut : 30 min). */
+      maxDurationMs?: number;
+      /** Nombre d'erreurs consécutives avant abandon (défaut : 5). */
+      maxConsecutiveErrors?: number;
+      /** Sous Node, ne pas retenir la boucle d'événements (défaut : false). */
+      unrefTimers?: boolean;
+    } = {}
   ): () => void {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let consecutiveErrors = 0;
     const interval = Math.max(options.intervalMs ?? 4000, 50);
+    const maxDuration = options.maxDurationMs ?? 30 * 60 * 1000;
+    const maxErrors = Math.max(1, options.maxConsecutiveErrors ?? 5);
+    const startedAt = Date.now();
+    const terminalStatuses: DeliveryStatus[] = ['DELIVERED', 'FAILED', 'CANCELLED'];
+
+    const schedule = (delayMs: number): void => {
+      timer = setTimeout(poll, delayMs);
+      if (options.unrefTimers) {
+        (timer as unknown as { unref?: () => void }).unref?.();
+      }
+    };
 
     const poll = async () => {
       if (stopped) return;
       try {
         const data = await this.track(trackingNumber);
         if (stopped) return;
+        consecutiveErrors = 0;
         callback(data);
-        if (data.status === 'DELIVERED' || data.status === 'FAILED') {
+        if (terminalStatuses.includes(data.deliveryStatus)) {
           return;
         }
       } catch (err: any) {
+        consecutiveErrors++;
         if (!stopped && options.onError) {
           options.onError(err instanceof Error ? err : new Error(String(err)));
         }
+        if (stopped || consecutiveErrors >= maxErrors) {
+          return;
+        }
       }
-      if (!stopped) {
-        timer = setTimeout(poll, interval);
+      if (!stopped && Date.now() - startedAt < maxDuration) {
+        schedule(interval);
       }
     };
 
-    timer = setTimeout(poll, 0);
+    schedule(0);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -2524,17 +3603,43 @@ export class DeliveryModule {
 // SOURCE: modules/tables.ts
 // ==========================================
 
+const TABLE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export class TablesModule {
   constructor(private http: HttpClient) {}
 
+  private resolveRestaurantId(override?: string): string {
+    const target = override || this.http.getConfig().restaurantId;
+    if (!target) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId est requis : fournissez-le à la configuration du client ou à l’appel.',
+        'MISSING_RESTAURANT_ID'
+      );
+    }
+    return target;
+  }
+
   /**
    * Récupère les informations d'une table scannée par QR Code (Dine-in).
+   *
+   * Le backend attend un UUID : passer un numéro de table produisait un 400
+   * sans corps de réponse impossible à diagnostiquer côté client.
    */
   public async getTableInfo(tableId: string, restaurantId?: string): Promise<PublicTableResponse> {
-    const target = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<PublicTableResponse>(`/api/public/restaurants/${encodeURIComponent(target || '')}/tables/${encodeURIComponent(tableId)}`, {
-      method: 'GET'
-    });
+    const target = this.resolveRestaurantId(restaurantId);
+    if (!TABLE_UUID_PATTERN.test(tableId)) {
+      throw new RestorinoApiError(
+        400,
+        'tableId doit être un UUID (le numéro affiché sur la table ne suffit pas).',
+        'INVALID_TABLE_ID'
+      );
+    }
+
+    return this.http.request<PublicTableResponse>(
+      `/api/public/restaurants/${encodeURIComponent(target)}/tables/${encodeURIComponent(tableId)}`,
+      { method: 'GET' }
+    );
   }
 }
 
@@ -2549,12 +3654,37 @@ export class LiveAgentSession {
   private ws: WebSocket | null = null;
   private status: LiveAgentStatus = 'CONNECTING';
   private listeners: Map<LiveAgentEvent, Set<Function>> = new Map();
+  private audioMeta: LiveAgentAudioMeta | null = null;
+  private closed = false;
 
   constructor(
     private config: LiveAgentSessionConfig,
-    resolvedWsUrl: string
+    source: string | (() => Promise<string>)
   ) {
-    this.initWebSocket(resolvedWsUrl);
+    if (typeof source === 'string') {
+      // Le jeton est déjà connu : ouverture immédiate, comportement synchrone.
+      this.initWebSocket(source);
+    } else {
+      void this.bootstrap(source);
+    }
+  }
+
+  /**
+   * Le jeton de session doit être obtenu par HTTP avant l'ouverture du socket :
+   * le backend refuse (`SESSION_GRANT_REQUIRED`, close 1008) tout socket sans
+   * `?grant=` valide.
+   */
+  private async bootstrap(source: string | (() => Promise<string>)): Promise<void> {
+    try {
+      const url = typeof source === 'function' ? await source() : source;
+      if (this.closed) return;
+      this.initWebSocket(url);
+    } catch (e: any) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (this.config.onError) this.config.onError(err);
+      this.emit('error', err);
+      this.updateStatus('ERROR');
+    }
   }
 
   /**
@@ -2617,15 +3747,40 @@ export class LiveAgentSession {
             // Protection contre la pollution de prototype
             if (data.type === '__proto__' || data.action === '__proto__') return;
 
-            if (data.type === 'TRANSCRIPT') {
-              if (this.config.onTranscript) this.config.onTranscript(data.role, data.text);
-              this.emit('transcript', data.role, data.text);
+            if (data.type === 'AUDIO_META') {
+              // Le backend annonce la fréquence réelle (24 kHz par défaut) :
+              // la supposer à 16 kHz produisait une lecture accélérée.
+              const meta: LiveAgentAudioMeta = {
+                encoding: typeof data.encoding === 'string' ? data.encoding : undefined,
+                sampleRate: Number(data.sampleRate) || 24000,
+                channels: Number(data.channels) || 1
+              };
+              this.audioMeta = meta;
+              if (this.config.onAudioMeta) this.config.onAudioMeta(meta);
+              this.emit('audioMeta', meta);
+            } else if (data.type === 'TRANSCRIPT') {
+              // Le backend alterne `agent` et `assistant` : on normalise.
+              const role: 'user' | 'assistant' = data.role === 'user' ? 'user' : 'assistant';
+              if (this.config.onTranscript) this.config.onTranscript(role, data.text);
+              this.emit('transcript', role, data.text);
             } else if (data.type === 'STATUS' && data.message) {
               this.updateStatus(data.message as LiveAgentStatus);
             } else if (data.type === 'INTERRUPTED') {
               if (this.config.onInterrupted) this.config.onInterrupted();
               this.emit('interrupted');
               this.updateStatus('INTERRUPTED');
+            } else if (data.type === 'SESSION_ENDED') {
+              const reason = typeof data.reason === 'string' ? data.reason : undefined;
+              if (this.config.onSessionEnded) this.config.onSessionEnded(reason);
+              this.emit('sessionEnded', reason);
+              this.updateStatus('DISCONNECTED');
+            } else if (data.type === 'ERROR' || data.error) {
+              // Les erreurs serveur (`{"error":"SESSION_GRANT_REQUIRED"}`) n'ont
+              // ni `type` ni `action` : sans cette branche elles étaient ignorées.
+              const err = new Error(String(data.message || data.error || 'Erreur du Live Agent.'));
+              if (this.config.onError) this.config.onError(err);
+              this.emit('error', err);
+              this.updateStatus('ERROR');
             } else if (data.action && typeof data.action === 'string') {
               const safePayload: Record<string, any> = {};
               for (const [k, v] of Object.entries(data)) {
@@ -2635,7 +3790,8 @@ export class LiveAgentSession {
               }
               const actionPayload: LiveAgentClientAction = {
                 action: data.action,
-                payload: safePayload
+                payload: safePayload,
+                actionId: typeof data.actionId === 'string' ? data.actionId : undefined
               };
               if (this.config.onClientAction) this.config.onClientAction(actionPayload);
               this.emit('action', actionPayload);
@@ -2664,7 +3820,12 @@ export class LiveAgentSession {
         this.updateStatus('ERROR');
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (event: CloseEvent) => {
+        if (!this.closed && event && event.code === 4001) {
+          const reason = event.reason || undefined;
+          if (this.config.onSessionEnded) this.config.onSessionEnded(reason);
+          this.emit('sessionEnded', reason);
+        }
         this.updateStatus('DISCONNECTED');
         if (this.config.onClose) this.config.onClose();
         this.emit('close');
@@ -2686,19 +3847,24 @@ export class LiveAgentSession {
     this.emit('status', newStatus);
   }
 
+  private sendJson(payload: Record<string, unknown>): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Impossible d'envoyer le message : WebSocket non connecté.");
+    }
+    this.ws.send(JSON.stringify(payload));
+  }
+
   /**
    * Envoie une invite textuelle à l'agent vocal.
    */
   public sendText(text: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("Impossible d'envoyer le message : WebSocket non connecté.");
-    }
     this.updateStatus('THINKING');
-    this.ws.send(JSON.stringify({ type: 'TEXT', text }));
+    this.sendJson({ type: 'TEXT', text });
   }
 
   /**
-   * Envoie un flux de données audio brutes (PCM 16kHz) issues du micro du client.
+   * Envoie un flux de données audio brutes issues du micro du client
+   * (PCM 16 kHz pour l'uplink, conformément au backend).
    */
   public sendAudio(pcmData: Uint8Array | ArrayBuffer | Blob): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -2712,6 +3878,28 @@ export class LiveAgentSession {
   }
 
   /**
+   * Confirme une action proposée par l'agent (ajout au panier, réservation).
+   * Sans cette confirmation, l'action reste en attente puis expire (5 min).
+   */
+  public confirmAction(actionId: string): void {
+    this.sendJson({ type: 'CONFIRM_ACTION', actionId });
+  }
+
+  /**
+   * Interrompt la prise de parole de l'agent.
+   */
+  public interrupt(): void {
+    this.sendJson({ type: 'INTERRUPT' });
+  }
+
+  /**
+   * Métadonnées audio annoncées par le serveur (`null` avant `AUDIO_META`).
+   */
+  public getAudioMeta(): LiveAgentAudioMeta | null {
+    return this.audioMeta;
+  }
+
+  /**
    * Retourne l'état courant de l'agent.
    */
   public getStatus(): LiveAgentStatus {
@@ -2722,6 +3910,7 @@ export class LiveAgentSession {
    * Ferme la session avec l'agent vocal.
    */
   public disconnect(): void {
+    this.closed = true;
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -2740,28 +3929,105 @@ export class LiveAgentModule {
 
   /**
    * Démarre une session vocale interactive avec le conseiller virtuel du restaurant.
+   *
+   * Le jeton de session est demandé de façon asynchrone ; la poignée retournée
+   * expose l'état via `getStatus()` et les callbacks de configuration.
    */
   public connect(config: LiveAgentSessionConfig): LiveAgentSession {
     const rawSlug = config.restaurantSlug || this.http.getConfig().restaurantId || '';
     const slug = rawSlug.replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '').trim();
-    let wsUrl = config.wsUrl;
 
-    if (!wsUrl) {
-      const base = this.http.getConfig().baseUrl;
-      const wsProtocol = base.startsWith('https') ? 'wss' : 'ws';
-      const host = base.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-      wsUrl = `${wsProtocol}://${host}/ws/public/live-agent?restaurantSlug=${encodeURIComponent(slug)}`;
-    } else {
-      if (!/^wss?:\/\//i.test(wsUrl.trim())) {
-        throw new Error("L'URL WebSocket doit obligatoirement commencer par 'ws://' ou 'wss://'.");
-      }
-      if (!wsUrl.includes('restaurantSlug=')) {
-        const separator = wsUrl.includes('?') ? '&' : '?';
-        wsUrl = `${wsUrl}${separator}restaurantSlug=${encodeURIComponent(slug)}`;
-      }
+    if (!slug) {
+      throw new Error('restaurantSlug est requis pour ouvrir une session Live Agent.');
     }
 
-    return new LiveAgentSession(config, wsUrl);
+    const explicitWsUrl = config.wsUrl;
+    if (explicitWsUrl && !/^wss?:\/\//i.test(explicitWsUrl.trim())) {
+      throw new Error("L'URL WebSocket doit obligatoirement commencer par 'ws://' ou 'wss://'.");
+    }
+
+    const urlProvider = async (): Promise<string> => {
+      const grant = await this.requestSessionGrant(slug);
+      return this.appendQuery(explicitWsUrl || this.buildDefaultWsUrl(), {
+        restaurantSlug: slug,
+        grant: grant || undefined
+      });
+    };
+
+    // Un `grant` fourni par l'appelant évite l'aller-retour HTTP et garde
+    // `connect()` synchrone (utile en SSR/test et pour les jetons pré-obtenus).
+    if (config.grant) {
+      const url = this.appendQuery(explicitWsUrl || this.buildDefaultWsUrl(), {
+        restaurantSlug: slug,
+        grant: config.grant
+      });
+      return new LiveAgentSession(config, url);
+    }
+
+    return new LiveAgentSession(config, urlProvider);
+  }
+
+  /**
+   * Obtient un jeton de session à usage unique.
+   * Retourne `null` si l'environnement ne l'exige pas (dev sans secret).
+   */
+  private async requestSessionGrant(slug: string): Promise<string | null> {
+    try {
+      const response = await this.http.request<{ grant?: string }>(
+        `/api/public/live-agent/${encodeURIComponent(slug)}/session`,
+        { method: 'POST', skipAuthRefresh: true, retries: 0 }
+      );
+      return response && typeof response.grant === 'string' ? response.grant : null;
+    } catch (err) {
+      if (err instanceof RestorinoApiError && [401, 403, 404, 429].includes(err.status)) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Déduit l'URL WebSocket depuis `baseUrl` en conservant un éventuel
+   * préfixe de chemin (proxy `/api`, version `/v1`…).
+   */
+  private buildDefaultWsUrl(): string {
+    const base = (this.http.getConfig().baseUrl || '').trim();
+
+    if (!/^https?:\/\//i.test(base)) {
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+      const wsProtocol = origin.startsWith('https') ? 'wss' : 'ws';
+      const host = origin.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+      const path = base.replace(/^\/+/, '').replace(/\/+$/, '');
+      return `${wsProtocol}://${host}${path ? `/${path}` : ''}`;
+    }
+
+    const url = new URL(base);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  }
+
+  private appendQuery(url: string, params: Record<string, string | undefined>): string {
+    const wsBase = url.replace(/\/+$/, '');
+    const resource = '/ws/public/live-agent';
+    const target = wsBase.includes('/ws/') ? wsBase : `${wsBase}${resource}`;
+
+    try {
+      const parsed = new URL(target);
+      for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === '') parsed.searchParams.delete(key);
+        else parsed.searchParams.set(key, value);
+      }
+      return parsed.toString();
+    } catch {
+      const separator = target.includes('?') ? '&' : '?';
+      const query = Object.entries(params)
+        .filter(([, value]) => value !== undefined && value !== '')
+        .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+        .join('&');
+      return query ? `${target}${separator}${query}` : target;
+    }
   }
 }
 
@@ -2823,27 +4089,53 @@ export function formatDate(
 
 export interface CartCalculationResult {
   subtotal: number;
+  tax: number;
   deliveryFee: number;
   discount: number;
   total: number;
   itemCount: number;
+  /** Le panier satisfait-il le minimum de commande (livraison / à emporter) ? */
+  meetsMinimumOrder: boolean;
 }
 
 export interface CartCalculationOptions {
   deliveryFee?: number;
   discountAmount?: number;
   discountPercent?: number;
+  /** Plafond du rabais en pourcentage (équivalent `maxDiscountAmount` backend). */
+  maxDiscountAmount?: number;
+  /** Taux de TVA en pourcentage (ex. 10 pour 10 %). */
+  taxRate?: number;
+  /** `restaurant_settings.minimumOrderAmount`. */
+  minimumOrderAmount?: number;
+  /** `restaurant_settings.freeDeliveryThreshold`. */
+  freeDeliveryThreshold?: number;
+  /**
+   * Le minimum de commande ne s'applique qu'à la livraison et au à-emporter
+   * (le backend l'ignore pour le sur-place) : passer `false` en dine-in.
+   * Défaut: true.
+   */
+  enforceMinimumOrder?: boolean;
 }
+
+const roundMoney = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
 
 /**
  * Calcule les sous-totaux, frais et totaux d'un panier d'articles.
+ *
+ * Reproduit la formule serveur (`OrderService.createVitrineOrder` + `Order.calculateTotal`) :
+ * `total = subtotal + tax + deliveryFee − discount`.
+ *
+ * ⚠️ Ce calcul est une **estimation d'affichage** : le backend reste
+ * autoritaire et rejette toute commande dont le total s'écarte de plus de 0,01 €.
+ * Ne jamais envoyer `total`/`tax` au serveur comme valeur de référence.
  */
 export function calculateCart(
   items: OrderItemRequest[],
   options: CartCalculationOptions = {}
 ): CartCalculationResult {
   if (!Array.isArray(items)) {
-    return { subtotal: 0, deliveryFee: 0, discount: 0, total: 0, itemCount: 0 };
+    return { subtotal: 0, tax: 0, deliveryFee: 0, discount: 0, total: 0, itemCount: 0, meetsMinimumOrder: true };
   }
 
   let subtotal = 0;
@@ -2853,53 +4145,223 @@ export function calculateCart(
     if (!item) continue;
     const qty = Math.max(0, item.quantity || 1);
     const unit = Math.max(0, item.unitPrice || 0);
-    subtotal += unit * qty;
+    // `totalPrice` inclut déjà suppléments, garniture et quantité : l'ignorer
+    // faisait diverger le panier dès qu'un extra était sélectionné.
+    const lineTotal = typeof item.totalPrice === 'number' && item.totalPrice > 0
+      ? item.totalPrice
+      : unit * qty;
+    subtotal += lineTotal;
     itemCount += qty;
   }
 
-  const deliveryFee = Math.max(0, options.deliveryFee || 0);
-  let discount = Math.max(0, options.discountAmount || 0);
+  subtotal = roundMoney(Math.max(0, subtotal));
 
+  const tax = roundMoney(subtotal * (Math.max(0, options.taxRate || 0) / 100));
+
+  let deliveryFee = Math.max(0, options.deliveryFee || 0);
+  if (options.freeDeliveryThreshold !== undefined && subtotal >= options.freeDeliveryThreshold) {
+    deliveryFee = 0;
+  }
+  deliveryFee = roundMoney(deliveryFee);
+
+  let discount = Math.max(0, options.discountAmount || 0);
   if (options.discountPercent && options.discountPercent > 0) {
     const percentDiscount = (subtotal * Math.min(100, options.discountPercent)) / 100;
-    discount = Math.max(discount, percentDiscount);
+    const cap = options.maxDiscountAmount ?? percentDiscount;
+    discount += Math.min(percentDiscount, Math.max(0, cap));
   }
+  // Le rabais ne peut pas dépasser le sous-total.
+  discount = roundMoney(Math.min(subtotal, discount));
 
-  // Le rabais ne peut pas dépasser le sous-total
-  discount = Math.min(subtotal, discount);
-  const total = Math.max(0, subtotal - discount + deliveryFee);
+  const total = roundMoney(Math.max(0, subtotal - discount + tax + deliveryFee));
 
-  return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    deliveryFee: Math.round(deliveryFee * 100) / 100,
-    discount: Math.round(discount * 100) / 100,
-    total: Math.round(total * 100) / 100,
-    itemCount
-  };
+  const minimum = Math.max(0, options.minimumOrderAmount || 0);
+  const meetsMinimumOrder = options.enforceMinimumOrder === false || subtotal >= minimum;
+
+  return { subtotal, tax, deliveryFee, discount, total, itemCount, meetsMinimumOrder };
 }
 
 /**
  * Vérifie si un plat contient un ou plusieurs allergènes spécifiés par le client.
+ *
+ * Accepte une chaîne (le backend sérialise `allergenInfo` comme un `String` :
+ * allergènes séparés par des virgules) ou un tableau.
  */
 export function checkAllergensConflict(
-  dishAllergens: string[] = [],
+  dishAllergens: string[] | string = [],
   customerAllergens: string[] = []
 ): { hasConflict: boolean; conflictingAllergens: string[] } {
-  if (!Array.isArray(dishAllergens) || !Array.isArray(customerAllergens)) {
+  const dishList = normalizeAllergens(dishAllergens);
+  const customerList = normalizeAllergens(customerAllergens);
+
+  if (dishList.length === 0 || customerList.length === 0) {
     return { hasConflict: false, conflictingAllergens: [] };
   }
 
-  const customerSet = new Set(
-    customerAllergens.map((a) => String(a).toLowerCase().trim())
-  );
-
-  const conflicts = dishAllergens
-    .map((a) => String(a).trim())
-    .filter((a) => customerSet.has(a.toLowerCase()));
+  const customerSet = new Set(customerList.map((a) => a.toLowerCase()));
+  const conflicts = dishList.filter((a) => customerSet.has(a.toLowerCase()));
 
   return {
     hasConflict: conflicts.length > 0,
     conflictingAllergens: conflicts
+  };
+}
+
+function normalizeAllergens(value: string[] | string): string[] {
+  if (Array.isArray(value)) {
+    return value.map((a) => String(a).trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(/[,;|]/).map((a) => a.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+// ==========================================
+// SOURCE: utils/audio.ts
+// ==========================================
+
+/**
+ * Lecture de flux PCM brut (Gemini Live) via Web Audio.
+ *
+ * Le backend annonce la fréquence réelle dans le cadre `AUDIO_META`
+ * (24 000 Hz par défaut). La supposer à 16 kHz produit une lecture ~1,5× trop
+ * rapide — cette implémentation accepte donc la fréquence annoncée.
+ *
+ * Sans `AudioContext` (SSR, navigateur ancien), le lecteur est un no-op sûr.
+ */
+
+export interface PcmPlayer {
+  /** Fréquence d'échantillonnage courante du flux. */
+  readonly sampleRate: number;
+  readonly playing: boolean;
+  /** Met à jour la fréquence (à appeler depuis `onAudioMeta`). */
+  updateSampleRate(sampleRate: number): void;
+  /** Ajoute un bloc PCM 16 bits signé little-endian à la file de lecture. */
+  enqueue(chunk: Uint8Array | ArrayBuffer): void;
+  /** Coupe la lecture en cours et vide la file. */
+  stop(): void;
+  /**
+   * Libère le `AudioContext`. À appeler au démontage : les navigateurs
+   * plafonnent le nombre de contextes simultanés (~6) et un nouveau lecteur
+   * par session les épuise.
+   */
+  close(): void;
+}
+
+export interface PcmPlayerOptions {
+  /** Défaut : 24 000 Hz (valeur annoncée par le backend). */
+  sampleRate?: number;
+  /** Défaut : 1 (mono). */
+  channels?: number;
+  /** Appelé quand la file se vide. */
+  onEnded?: () => void;
+}
+
+export function createPcmPlayer(options: PcmPlayerOptions = {}): PcmPlayer {
+  const AudioCtor: typeof AudioContext | undefined =
+    typeof window !== 'undefined'
+      ? (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)
+      : undefined;
+
+  let sampleRate = options.sampleRate && options.sampleRate > 0 ? options.sampleRate : 24000;
+  const channels = Math.max(1, options.channels ?? 1);
+  let context: AudioContext | null = null;
+  let nextStartTime = 0;
+  const activeSources = new Set<AudioBufferSourceNode>();
+
+  const ensureContext = (): AudioContext | null => {
+    if (!AudioCtor) return null;
+    if (!context) {
+      try {
+        context = new AudioCtor();
+      } catch {
+        return null;
+      }
+    }
+    if (context.state === 'suspended') {
+      void context.resume().catch(() => {});
+    }
+    return context;
+  };
+
+  const stopAll = (): void => {
+    for (const source of activeSources) {
+      try {
+        source.stop();
+      } catch {
+        // Déjà arrêté.
+      }
+    }
+    activeSources.clear();
+    nextStartTime = 0;
+  };
+
+  return {
+    get sampleRate() {
+      return sampleRate;
+    },
+
+    get playing() {
+      return activeSources.size > 0;
+    },
+
+    updateSampleRate(rate: number) {
+      if (Number.isFinite(rate) && rate > 0) sampleRate = rate;
+    },
+
+    enqueue(chunk: Uint8Array | ArrayBuffer) {
+      const audioContext = ensureContext();
+      if (!audioContext) return;
+
+      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      const frames = Math.floor(bytes.byteLength / (2 * channels));
+      if (frames <= 0) return;
+
+      let buffer: AudioBuffer;
+      try {
+        buffer = audioContext.createBuffer(channels, frames, sampleRate);
+      } catch {
+        // Fréquence non supportée par le navigateur.
+        return;
+      }
+
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let channel = 0; channel < channels; channel++) {
+        const data = buffer.getChannelData(channel);
+        for (let frame = 0; frame < frames; frame++) {
+          const sample = view.getInt16((frame * channels + channel) * 2, true);
+          // PCM16 signé → flottant [-1, 1]
+          data[frame] = sample < 0 ? sample / 0x8000 : sample / 0x7fff;
+        }
+      }
+
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+
+      const startAt = Math.max(audioContext.currentTime + 0.02, nextStartTime);
+      source.start(startAt);
+      nextStartTime = startAt + buffer.duration;
+
+      activeSources.add(source);
+      source.onended = () => {
+        activeSources.delete(source);
+        if (activeSources.size === 0) options.onEnded?.();
+      };
+    },
+
+    stop() {
+      stopAll();
+    },
+
+    close() {
+      stopAll();
+      if (context) {
+        void context.close().catch(() => {});
+        context = null;
+      }
+    }
   };
 }
 
@@ -2986,19 +4448,6 @@ export class RestorinoClient {
     return this.http.getRefreshToken();
   }
 
-  /**
-   * Récupère la clé API Vitrine actuellement configurée.
-   */
-  public getApiKey(): string | null {
-    return this.http.getApiKey();
-  }
-
-  /**
-   * Définit dynamiquement la clé API Vitrine.
-   */
-  public setApiKey(apiKey: string | null): void {
-    this.http.setApiKey(apiKey);
-  }
 
   /**
    * Définit manuellement le token JWT client (et optionnellement son refresh token).
@@ -3016,13 +4465,17 @@ export class RestorinoClient {
 
   /**
    * Définit simultanément le token d'accès et le refresh token.
+   * Omettre `refreshToken` conserve celui déjà stocké.
    */
-  public setAuthTokens(token: string | null, refreshToken: string | null = null): void {
+  public setAuthTokens(token: string | null, refreshToken?: string | null): void {
     this.http.setAuthTokens(token, refreshToken);
   }
 
   /**
-   * Vérifie si un token client est présent.
+   * Vrai si un JWT est mémorisé côté client.
+   *
+   * En mode cookies (défaut), l'absence de token local ne signifie **pas** que
+   * la session est fermée : appeler `auth.getMe()` pour connaître l'état réel.
    */
   public isAuthenticated(): boolean {
     return !!this.http.getToken();
@@ -3059,7 +4512,7 @@ export class RestorinoClient {
   /**
    * Vérifie les conflits d'allergènes entre un plat et les allergies du client.
    */
-  public checkAllergens(dishAllergens: string[], customerAllergens: string[]) {
+  public checkAllergens(dishAllergens: string[] | string, customerAllergens: string[]) {
     return checkAllergensConflict(dishAllergens, customerAllergens);
   }
 }

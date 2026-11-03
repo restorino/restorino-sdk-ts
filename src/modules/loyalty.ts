@@ -1,4 +1,4 @@
-import { HttpClient } from '../http/http-client';
+import { HttpClient, RestorinoApiError } from '../http/http-client';
 import {
   CustomerLoyalty,
   LoyaltyReward,
@@ -9,7 +9,8 @@ import {
   GoogleReviewClaimDTO,
   UploadReviewProofResponse
 } from '../types/loyalty';
-import { MessageResponse } from '../types/common';
+
+const RESTAURANT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class LoyaltyModule {
   constructor(private http: HttpClient) {}
@@ -46,12 +47,22 @@ export class LoyaltyModule {
 
   /**
    * Récupère les informations publiques de la campagne d'avis Google du restaurant.
+   * Le paramètre de chemin doit être un UUID (un slug produit un 400).
    */
   public async getGoogleReviewInfo(restaurantId?: string): Promise<GoogleReviewInfoResponse> {
     const targetId = restaurantId || this.http.getConfig().restaurantId;
-    return this.http.request<GoogleReviewInfoResponse>(`/api/public/restaurants/${encodeURIComponent(targetId || '')}/google-review-info`, {
-      method: 'GET'
-    });
+    if (!targetId || !RESTAURANT_UUID_PATTERN.test(targetId)) {
+      throw new RestorinoApiError(
+        400,
+        'restaurantId (UUID) est requis pour consulter la campagne d’avis Google.',
+        'INVALID_RESTAURANT_ID'
+      );
+    }
+
+    return this.http.request<GoogleReviewInfoResponse>(
+      `/api/public/restaurants/${encodeURIComponent(targetId)}/google-review-info`,
+      { method: 'GET' }
+    );
   }
 
   /**

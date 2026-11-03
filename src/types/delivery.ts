@@ -1,24 +1,49 @@
 /**
- * Coordonnées GPS pour le tracking livreur.
+ * Statuts de livraison (`DeliveryStatus` backend).
+ * `ACCEPTED`/`OUT_FOR_DELIVERY` n'existent pas côté serveur.
  */
-export interface DriverGpsLocation {
-  latitude: number;
-  longitude: number;
-  updatedAt?: string;
+export type DeliveryStatus =
+  | 'PENDING'
+  | 'ASSIGNED'
+  | 'PICKED_UP'
+  | 'IN_TRANSIT'
+  | 'DELIVERED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export interface TrackingProgressStep {
+  key: string;
+  label: string;
+  completed: boolean;
+  current: boolean;
+  timestamp?: string;
 }
 
 /**
- * Réponse du suivi public de livraison sans authentification.
+ * Suivi public de livraison (`PublicTrackingResponse`).
+ *
+ * ⚠️ Les coordonnées livreur sont aplaties (`driverLatitude` /
+ * `driverLongitude`) et ne sont présentes qu'en `PICKED_UP` / `IN_TRANSIT`.
  */
 export interface PublicTrackingResponse {
   trackingNumber: string;
   orderNumber: string;
-  status: 'PENDING' | 'ACCEPTED' | 'PICKED_UP' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'FAILED';
-  driverName?: string;
-  driverPhone?: string;
-  driverLocation?: DriverGpsLocation;
-  etaMinutes?: number;
+  deliveryStatus: DeliveryStatus;
+  statusDisplayName?: string;
+  statusDescription?: string;
+  orderPlacedTime?: string;
   estimatedDeliveryTime?: string;
+  actualDeliveryTime?: string;
+  deliveryAddress?: string;
+  driverName?: string;
+  driverLatitude?: number;
+  driverLongitude?: number;
   restaurantName: string;
-  deliveryAddressSummary?: string;
+  restaurantPhone?: string;
+  restaurantAddress?: string;
+  restaurantLatitude?: number;
+  restaurantLongitude?: number;
+  totalAmount?: number;
+  currency?: string;
+  progressSteps?: TrackingProgressStep[];
 }

@@ -15,7 +15,6 @@ test('RestorinoClient: initializes with all 8 modules and HTTP client', () => {
     baseUrl: 'https://api.restorino.com',
     restaurantId: 'rest-uuid-123',
     tenantId: 'tenant-uuid-456',
-    apiKey: 'sk-storefront-789',
     storageType: 'memory'
   });
 
@@ -31,7 +30,7 @@ test('RestorinoClient: initializes with all 8 modules and HTTP client', () => {
   assert.equal(client.http.getConfig().baseUrl, 'https://api.restorino.com');
   assert.equal(client.http.getConfig().restaurantId, 'rest-uuid-123');
   assert.equal(client.http.getConfig().tenantId, 'tenant-uuid-456');
-  assert.equal(client.http.getConfig().apiKey, 'sk-storefront-789');
+  assert.equal(client.http.getConfig().scope, 'storefront');
 });
 
 test('HttpClient: manages token in memory storage', () => {
@@ -86,10 +85,11 @@ test('HttpClient: manages token in localStorage (browser persistence & reload)',
   }
 });
 
-test('HttpClient: throws RestorinoApiError(401) when requiresAuth=true and token is missing', async () => {
+test('HttpClient: throws RestorinoApiError(401) when requiresAuth=true, token is missing and cookies are disabled', async () => {
   const http = new HttpClient({
     baseUrl: 'https://api.restorino.com',
-    storageType: 'memory'
+    storageType: 'memory',
+    credentials: 'omit'
   });
 
   await assert.rejects(
@@ -203,8 +203,8 @@ test('AuthModule: login stores token and sends proper headers', async () => {
   try {
     const client = new RestorinoClient({
       baseUrl: 'https://api.restorino.com',
-      restaurantId: 'rest-uuid-1',
-      tenantId: 'tenant-uuid-1',
+      restaurantId: '9b2f5f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b',
+      tenantId: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
       storageType: 'memory'
     });
 
@@ -216,11 +216,13 @@ test('AuthModule: login stores token and sends proper headers', async () => {
     assert.equal(authRes.token, 'signed-customer-jwt-token');
     assert.equal(client.http.getToken(), 'signed-customer-jwt-token');
     assert.equal(interceptedRequest.url, 'https://api.restorino.com/api/auth/customers/login');
-    assert.equal(interceptedRequest.options.headers['x-restaurant-id'], 'rest-uuid-1');
-    assert.equal(interceptedRequest.options.headers['x-tenant-id'], 'tenant-uuid-1');
+    assert.equal(interceptedRequest.options.headers['x-restaurant-id'], '9b2f5f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b');
+    assert.equal(interceptedRequest.options.headers['x-tenant-id'], '3fa85f64-5717-4562-b3fc-2c963f66afa6');
+    // L'authentification repose sur les cookies HttpOnly côté backend.
+    assert.equal(interceptedRequest.options.credentials, 'include');
     const sentBody = JSON.parse(interceptedRequest.options.body);
     assert.equal(sentBody.email, 'test@example.com');
-    assert.equal(sentBody.restaurantId, 'rest-uuid-1');
+    assert.equal(sentBody.restaurantId, '9b2f5f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -453,8 +455,11 @@ test('Security: Header sanitization prevents CRLF injection', async () => {
 
     await client.vitrine.getPopular();
 
-    assert.equal(interceptedRequest.options.headers['x-tenant-id'], 'tenant-123Injected-Header: evil');
-    assert.equal(interceptedRequest.options.headers['x-restaurant-id'], 'rest-456Another: bad');
+    // Les valeurs non-UUID sont routées vers `x-tenant-slug` : le backend
+    // rejette (403) un `x-restaurant-id` non-UUID ou contradictoire.
+    assert.equal(interceptedRequest.options.headers['x-tenant-slug'], 'tenant-123Injected-Header: evil');
+    assert.equal(interceptedRequest.options.headers['x-tenant-id'], undefined);
+    assert.equal(interceptedRequest.options.headers['x-restaurant-id'], undefined);
     assert.equal(interceptedRequest.options.headers['Authorization'], 'Bearer jwt-tokenX-Injected: value');
     assert.equal(interceptedRequest.options.headers['Injected-Header'], undefined);
   } finally {
@@ -462,7 +467,7 @@ test('Security: Header sanitization prevents CRLF injection', async () => {
   }
 });
 
-test('Security: Path traversal characters are encoded in URL paths', async () => {
+test('Security: Path traversal is blocked before reaching the network', async () => {
   const originalFetch = globalThis.fetch;
   let interceptedUrl = null;
 
@@ -482,14 +487,23 @@ test('Security: Path traversal characters are encoded in URL paths', async () =>
       storageType: 'memory'
     });
 
-    // Attempting path traversal in delivery tracking
-    await client.delivery.track('../../admin/secret');
-    assert.ok(interceptedUrl.includes('%2F..%2F..%2Fadmin%2Fsecret') || interceptedUrl.includes('..%2F..%2Fadmin%2Fsecret'));
-    assert.ok(!interceptedUrl.includes('/api/public/deliveries/track/../../admin/secret'));
+    // Traversal is rejected by the scope guard (encoded separators are refused).
+    await assert.rejects(
+      async () => client.delivery.track('../../admin/secret'),
+      (err) => err.error === 'OUT_OF_SCOPE_ENDPOINT'
+    );
+    assert.equal(interceptedUrl, null);
 
-    // Attempting path traversal in tableId
-    await client.tables.getTableInfo('../../etc/passwd', 'rest-1');
-    assert.ok(!interceptedUrl.includes('/api/public/restaurants/rest-1/tables/../../etc/passwd'));
+    // Ordinary special characters are still encoded and sent.
+    await client.delivery.track('TRK 42');
+    assert.ok(interceptedUrl.includes('TRK%2042'));
+
+    // Un identifiant de table non-UUID est rejeté avant tout appel réseau
+    // (le backend répondait un 400 sans corps, impossible à diagnostiquer).
+    await assert.rejects(
+      async () => client.tables.getTableInfo('../../etc/passwd', 'rest-1'),
+      (err) => err && err.error === 'INVALID_TABLE_ID'
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -510,14 +524,27 @@ test('Security: Prevents protocol-relative URL redirects in buildUrl', async () 
   };
 
   try {
+    // `scope: 'all'` is needed here because the default storefront guard now
+    // rejects non-storefront paths before buildUrl runs.
     const client = new RestorinoClient({
       baseUrl: 'https://api.restorino.com',
-      storageType: 'memory'
+      storageType: 'memory',
+      scope: 'all'
     });
 
     // Calling request with leading double slash must not become protocol-relative
     await client.http.request('//evil.com/phish');
     assert.equal(interceptedUrl, 'https://api.restorino.com/evil.com/phish');
+
+    // ...and the default scope blocks it outright, before any network call.
+    const guarded = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      storageType: 'memory'
+    });
+    await assert.rejects(
+      async () => guarded.http.request('//evil.com/phish'),
+      (err) => err.error === 'OUT_OF_SCOPE_ENDPOINT'
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -548,12 +575,16 @@ test('LiveAgentModule: connect resolves secure wss/ws URL and scopes restaurantS
 
     const session = client.liveAgent.connect({
       restaurantSlug: 'bella-vita',
+      grant: 'test-grant',
       onTranscript: () => {},
       onStatusChange: () => {}
     });
 
     assert.ok(session);
-    assert.equal(createdUrl, 'wss://api.restorino.com/ws/public/live-agent?restaurantSlug=bella-vita');
+    assert.equal(
+      createdUrl,
+      'wss://api.restorino.com/ws/public/live-agent?restaurantSlug=bella-vita&grant=test-grant'
+    );
   } finally {
     globalThis.WebSocket = originalWebSocket;
   }
@@ -711,7 +742,8 @@ test('LiveAgentSession: supports EventEmitter .on(), .off(), and unsubscribe cal
     });
 
     const session = client.liveAgent.connect({
-      restaurantSlug: 'test-rest'
+      restaurantSlug: 'test-rest',
+      grant: 'test-grant'
     });
 
     let transcriptCount = 0;
@@ -811,113 +843,6 @@ test('VitrineModule: getTestimonials routes to /api/public/testimonials/{id}', a
   }
 });
 
-test('VitrineModule: validateApiKey sends X-API-Key to /api/vitrine/api-keys/validate', async () => {
-  const originalFetch = globalThis.fetch;
-  let interceptedHeaders = null;
-  let interceptedUrl = '';
-
-  globalThis.fetch = async (url, options) => {
-    interceptedUrl = url;
-    interceptedHeaders = options.headers;
-    return {
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({
-        valid: true,
-        keyId: 'key-123',
-        restaurantId: 'rest-456',
-        permissions: ['READ', 'WRITE']
-      })
-    };
-  };
-
-  try {
-    const client = new RestorinoClient({
-      baseUrl: 'https://api.restorino.com',
-      apiKey: 'vit_live_testkey123',
-      allowApiKeyHeader: true,
-      storageType: 'memory'
-    });
-
-    const res = await client.vitrine.validateApiKey();
-    assert.equal(res.valid, true);
-    assert.equal(res.keyId, 'key-123');
-    assert.equal(interceptedHeaders['X-API-Key'], 'vit_live_testkey123');
-    assert.ok(interceptedUrl.includes('/api/vitrine/api-keys/validate'));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('HttpClient: does not send configured API keys without explicit server-only opt-in', async () => {
-  const originalFetch = globalThis.fetch;
-  let interceptedHeaders = null;
-
-  globalThis.fetch = async (_url, options) => {
-    interceptedHeaders = options.headers;
-    return {
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ ok: true })
-    };
-  };
-
-  try {
-    const client = new RestorinoClient({
-      baseUrl: 'https://api.restorino.com',
-      apiKey: 'vit_live_browser_secret',
-      storageType: 'memory'
-    });
-
-    await client.http.request('/api/public/restaurants/search', { method: 'GET' });
-    assert.equal(interceptedHeaders['X-API-Key'], undefined);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('VitrineModule: getConfig routes to /api/vitrine/{tenantId}/config with X-API-Key', async () => {
-  const originalFetch = globalThis.fetch;
-  let interceptedUrl = '';
-  let interceptedHeaders = null;
-
-  globalThis.fetch = async (url, options) => {
-    interceptedUrl = url;
-    interceptedHeaders = options.headers;
-    return {
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({
-        tenantId: 'tenant-123',
-        restaurantName: 'Bella Vita',
-        brandingPrimaryColor: '#ff5500',
-        settingsIsPublished: true
-      })
-    };
-  };
-
-  try {
-    const client = new RestorinoClient({
-      baseUrl: 'https://api.restorino.com',
-      tenantId: 'tenant-123',
-      apiKey: 'vit_live_secretkey',
-      allowApiKeyHeader: true,
-      storageType: 'memory'
-    });
-
-    const config = await client.vitrine.getConfig();
-    assert.equal(config.restaurantName, 'Bella Vita');
-    assert.equal(config.brandingPrimaryColor, '#ff5500');
-    assert.equal(interceptedHeaders['X-API-Key'], 'vit_live_secretkey');
-    assert.ok(interceptedUrl.includes('/api/vitrine/tenant-123/config'));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test('VitrineModule: getPublicConfig routes to /api/vitrine/{tenant}/public without requiring auth', async () => {
   const originalFetch = globalThis.fetch;
   let interceptedUrl = '';
@@ -984,20 +909,6 @@ test('VitrineModule: resolveCustomDomain routes to /api/vitrine/resolve-domain',
   }
 });
 
-test('RestorinoClient: manages apiKey dynamically with getApiKey and setApiKey', () => {
-  const client = new RestorinoClient({
-    baseUrl: 'https://api.restorino.com',
-    apiKey: 'vit_live_initial',
-    storageType: 'memory'
-  });
-
-  assert.equal(client.getApiKey(), 'vit_live_initial');
-  client.setApiKey('vit_live_updated');
-  assert.equal(client.getApiKey(), 'vit_live_updated');
-  client.setApiKey(null);
-  assert.equal(client.getApiKey(), null);
-});
-
 test('Security: Header sanitization blocks Unicode line separators (\\u2028, \\u2029)', async () => {
   const originalFetch = globalThis.fetch;
   let interceptedRequest = null;
@@ -1016,15 +927,13 @@ test('Security: Header sanitization blocks Unicode line separators (\\u2028, \\u
     const client = new RestorinoClient({
       baseUrl: 'https://api.restorino.com',
       tenantId: 'tenant-123\u2028Injected: bad',
-      apiKey: 'key-abc\u2029Other: evil',
-      allowApiKeyHeader: true,
       storageType: 'memory'
     });
 
     await client.vitrine.getPopular();
 
-    assert.equal(interceptedRequest.options.headers['x-tenant-id'], 'tenant-123Injected: bad');
-    assert.equal(interceptedRequest.options.headers['X-API-Key'], 'key-abcOther: evil');
+    assert.equal(interceptedRequest.options.headers['x-tenant-slug'], 'tenant-123Injected: bad');
+    assert.equal(interceptedRequest.options.headers['x-tenant-id'], undefined);
     assert.equal(interceptedRequest.options.headers['Injected'], undefined);
     assert.equal(interceptedRequest.options.headers['Other'], undefined);
   } finally {
@@ -1049,7 +958,8 @@ test('Security: buildUrl cleans backslashes and prevents SSRF absolute URL overr
   try {
     const client = new RestorinoClient({
       baseUrl: 'https://api.restorino.com',
-      storageType: 'memory'
+      storageType: 'memory',
+      scope: 'all'
     });
 
     // Backslash path that could resolve as protocol-relative
@@ -1081,7 +991,8 @@ test('Security: buildUrl and updateConfig ignore __proto__ and prototype polluti
   try {
     const client = new RestorinoClient({
       baseUrl: 'https://api.restorino.com',
-      storageType: 'memory'
+      storageType: 'memory',
+      scope: 'all'
     });
 
     // Parameter pollution payload with __proto__
@@ -1193,11 +1104,14 @@ test('OrdersModule: watchOrder polls tracking and stops automatically upon DELIV
   try {
     const client = new RestorinoClient({
       baseUrl: 'https://api.restorino.com',
+      restaurantId: '9b2f5f2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b',
       storageType: 'memory'
     });
 
     let receivedCount = 0;
     let finalStatus = '';
+    let resolveDone;
+    const reachedTerminal = new Promise((resolve) => { resolveDone = resolve; });
 
     const stopWatching = client.orders.watchOrder(
       'ord-1',
@@ -1205,11 +1119,18 @@ test('OrdersModule: watchOrder polls tracking and stops automatically upon DELIV
       (tracking) => {
         receivedCount++;
         finalStatus = tracking.status;
+        if (tracking.status === 'DELIVERED') resolveDone();
       },
-      { intervalMs: 50 }
+      { intervalMs: 20 }
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Event-based wait: a fixed sleep is flaky when the suite runs in parallel.
+    await Promise.race([
+      reachedTerminal,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('watchOrder never reached DELIVERED')), 2000)
+      )
+    ]);
     stopWatching();
 
     assert.ok(receivedCount >= 2);
