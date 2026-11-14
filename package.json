@@ -31,19 +31,20 @@
     ".env.example",
     "LICENSE"
   ],
+  "packageManager": "pnpm@10.33.2",
   "engines": {
-    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
+    "node": ">=24.22.1"
   },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc && tsc -p tsconfig.esm.json && node scripts/build-esm.mjs && npm run bundle:single",
+    "build": "pnpm run clean && tsc && tsc -p tsconfig.esm.json && node scripts/build-esm.mjs && pnpm run bundle:single",
     "bundle:single": "node scripts/bundle-single.mjs",
     "typecheck": "tsc --noEmit --noUnusedLocals --noUnusedParameters -p tsconfig.json",
     "typecheck:examples": "tsc -p examples/vanilla/tsconfig.json",
     "contract:snapshot": "node scripts/contract-snapshot.mjs",
-    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
-    "prepack": "npm run build",
-    "prepublishOnly": "npm run build"
+    "test": "pnpm run build && node --test \"test/**/*.test.mjs\"",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run build"
   },
   "keywords": [
     "restorino",
