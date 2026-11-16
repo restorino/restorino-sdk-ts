@@ -101,7 +101,12 @@ export interface RestorinoClientConfig {
 
   /**
    * Identifiant d'appareil opaque et stable (`X-Device-Fingerprint`).
-   * S'il est omis, le SDK en génère un et le persiste dans le stockage configuré.
+   *
+   * S'il est omis, le SDK en génère un avec un CSPRNG et le persiste dans
+   * `localStorage` **indépendamment de `storageType`** : le backend révoque
+   * toute la famille de refresh tokens si l'empreinte change, donc sa stabilité
+   * primer sur l'effacement. Sans CSPRNG, aucun en-tête n'est envoyé et le
+   * backend retombe sur IP + User-Agent.
    */
   deviceFingerprint?: string;
 

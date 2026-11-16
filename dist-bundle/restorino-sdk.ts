@@ -115,7 +115,12 @@ export interface RestorinoClientConfig {
 
   /**
    * Identifiant d'appareil opaque et stable (`X-Device-Fingerprint`).
-   * S'il est omis, le SDK en génère un et le persiste dans le stockage configuré.
+   *
+   * S'il est omis, le SDK en génère un avec un CSPRNG et le persiste dans
+   * `localStorage` **indépendamment de `storageType`** : le backend révoque
+   * toute la famille de refresh tokens si l'empreinte change, donc sa stabilité
+   * primer sur l'effacement. Sans CSPRNG, aucun en-tête n'est envoyé et le
+   * backend retombe sur IP + User-Agent.
    */
   deviceFingerprint?: string;
 
@@ -1530,6 +1535,9 @@ const ALLOWED_EXACT: ReadonlySet<string> = new Set([
 /** Public vitrine reads: `/api/vitrine/{tenant}/public` and `/schema.json`. */
 const ALLOWED_VITRINE_READ = /^\/api\/vitrine\/[^/]+\/(public|schema\.json)$/;
 
+/** Profondeur maximale de décodage avant refus (fail closed). */
+const MAX_DECODE_DEPTH = 8;
+
 /**
  * Collapses `.` / `..` segments, duplicate slashes, backslashes and any
  * query/fragment. Used before matching so `/api/public/../admin/x`
@@ -1563,10 +1571,34 @@ export function isStorefrontEndpoint(endpoint: string): boolean {
     .split('?')[0]
     .split('#')[0];
 
-  // Un séparateur encodé (`%2F`, `%5C`) ou un point encodé (`%2E`) peut être
-  // décodé par un proxy intermédiaire et reconstruire un `/../` : refusé par
-  // principe, aucun chemin storefront légitime n'en contient.
-  if (/%2f|%5c|%00|%2e/i.test(rawPath)) return false;
+  // `;` ouvre les paramètres de matrice (`/api/public/..;/admin`) que certains
+  // conteneurs normalisent en traversée. Aucun endpoint du SDK n'en utilise.
+  if (rawPath.includes(';')) return false;
+
+  // Décodage récursif borné contre l'encodage imbriqué (%2e, %252e, %25252e…).
+  // Rejette tout séparateur (%2F, %5C), point (%2E) ou null byte (%00) à
+  // n'importe quel niveau. L'ancienne boucle plafonnée à 3 tours laissait
+  // passer 5 niveaux d'encodage : la borne est désormais explicite et tout
+  // reste d'encodage au-delà est refusé (fail closed).
+  let current = rawPath;
+  for (let depth = 0; ; depth++) {
+    if (/%2f|%5c|%00|%2e/i.test(current)) return false;
+
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(current);
+    } catch {
+      return false; // Séquence pourcent malformée rejetée fail-closed
+    }
+
+    if (decoded === current) break;
+    if (depth >= MAX_DECODE_DEPTH) return false;
+    current = decoded;
+  }
+
+  // `;` (paramètres de matrice) : `..;` n'est pas un segment `..` pour ce garde,
+  // mais certains proxys le normalisent en `..`. Refus fail-closed.
+  if (current.includes(';')) return false;
 
   const path = normalizeEndpointPath(endpoint);
 
@@ -1662,6 +1694,11 @@ export class HttpClient {
   private refreshPromise: Promise<boolean> | null = null;
   /** Incrémenté à chaque fermeture de session (voir `clearTokens`). */
   private sessionGeneration = 0;
+  /** Compteur local, garantit l'unicité des clés d'idempotence sans CSPRNG. */
+  private idempotencyCounter = 0;
+
+  /** Taille maximale lue sur un corps de réponse d'erreur (8 Kio). */
+  private static readonly MAX_ERROR_BODY_BYTES = 8192;
 
   /**
    * Valide `baseUrl` : seuls les absolus http(s) et les chemins racine
@@ -1691,6 +1728,17 @@ export class HttpClient {
       }
       if (parsed.username || parsed.password) {
         throw new Error('baseUrl ne doit pas embarquer d’identifiants.');
+      }
+      if (parsed.search || parsed.hash) {
+        throw new Error('baseUrl ne doit pas comporter de paramètres de requête (?) ou d’ancre (#).');
+      }
+      // Le SDK transporte des cookies HttpOnly et des jetons Bearer : un
+      // transport en clair vers un hôte public les exposerait à tout le
+      // réseau. Loopback et plages privées restent autorisés (dev, POS LAN).
+      if (parsed.protocol === 'http:' && !HttpClient.isLocalHostname(parsed.hostname)) {
+        throw new Error(
+          'baseUrl en clair (http) interdit hors réseau local : utilisez https://.'
+        );
       }
       return value.replace(/\/+$/, '');
     }
@@ -1821,6 +1869,27 @@ export class HttpClient {
   }
 
   /**
+   * Génère une clé d'idempotence pour l'en-tête `Idempotency-Key`.
+   *
+   * Elle reste stable pendant les réessais internes d'un même appel, ce qui
+   * permet au backend (`@Idempotent`) de renvoyer la réponse d'origine au lieu
+   * de réexécuter une mutation porteuse de valeur (rachat de points, avis).
+   */
+  public createIdempotencyKey(): string {
+    const cryptoObj = (globalThis as any)?.crypto;
+    if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+    if (cryptoObj?.getRandomValues) {
+      const bytes = new Uint8Array(16);
+      cryptoObj.getRandomValues(bytes);
+      return Array.from(bytes, (b: number) => b.toString(16).padStart(2, '0')).join('');
+    }
+    // Sans CSPRNG : le compteur d'instance évite qu'un même client réutilise
+    // une clé, ce qui suffit à ne pas recevoir la réponse mise en cache d'un
+    // autre appel du même tenant.
+    return `idem-${Date.now().toString(36)}-${(this.idempotencyCounter++).toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  /**
    * Mode de stockage effectif.
    *
    * Défaut = mémoire : un refresh token en `localStorage` est lisible par tout
@@ -1901,19 +1970,18 @@ export class HttpClient {
     this.refreshPromise = (async () => {
       const generation = this.sessionGeneration;
       try {
+        // Le backend lit le refresh token **uniquement** dans le cookie
+        // HttpOnly : `AuthSessionController#refreshToken` n'a pas de
+        // `@RequestBody` et rien ne consomme `x-refresh-token`. L'envoyer
+        // aussi dans le corps et un en-tête exposait le secret aux journaux
+        // de corps, aux proxies et au tracing, sans aucun gain fonctionnel.
         const refreshResponse = await this.executeSingleRequest<{
           token?: string;
           refreshToken?: string;
           success?: boolean;
         }>('/api/auth/refresh', {
           method: 'POST',
-          body: currentRefreshToken ? { refreshToken: currentRefreshToken } : undefined,
-          headers: {
-            'X-Auth-Scope': 'customer',
-            ...(currentRefreshToken
-              ? { 'x-refresh-token': this.sanitizeHeaderValue(currentRefreshToken) }
-              : {})
-          },
+          headers: { 'X-Auth-Scope': 'customer' },
           skipAuthRefresh: true,
           retries: 0
         });
@@ -2148,7 +2216,11 @@ export class HttpClient {
 
     let response: Response;
     const startedAt = Date.now();
-    this.emitHook(() => this.config.onRequest?.({ method, path: endpoint }));
+    // `onRequest`/`onResponse` documentent l'absence de query string : un
+    // appel via l'échappatoire `http.request('/x?token=…')` la fuitait dans
+    // les logs de l'application.
+    const hookPath = endpoint.split('?')[0].split('#')[0];
+    this.emitHook(() => this.config.onRequest?.({ method, path: hookPath }));
 
     try {
       response = await fetch(url, fetchOptions);
@@ -2172,7 +2244,7 @@ export class HttpClient {
     const requestId = response.headers.get('x-request-id') || undefined;
     this.emitHook(() => this.config.onResponse?.({
       method,
-      path: endpoint,
+      path: hookPath,
       status: response.status,
       durationMs: Date.now() - startedAt,
       requestId
@@ -2233,6 +2305,24 @@ export class HttpClient {
       'INVALID_RESPONSE',
       undefined,
       text.slice(0, 2048)
+    );
+  }
+
+  /**
+   * Hôtes pour lesquels un transport en clair reste acceptable : loopback,
+   * mDNS et plages privées RFC 1918 (poste de dev, terminal POS sur le LAN).
+   */
+  private static isLocalHostname(hostname: string): boolean {
+    const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+    return (
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host.endsWith('.local') ||
+      host === '::1' ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
     );
   }
 
@@ -2302,16 +2392,60 @@ export class HttpClient {
     if (this.ephemeralFingerprint) return this.ephemeralFingerprint;
     if (typeof window === 'undefined') return null;
 
-    const stored = this.loadStoredValue(this.deviceFingerprintStorageKey);
-    if (stored) return stored;
+    let stored = this.loadStoredValue(this.deviceFingerprintStorageKey);
+    if (!stored) {
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const raw = localStorage.getItem(this.deviceFingerprintStorageKey);
+          if (
+            raw &&
+            typeof raw === 'string' &&
+            raw.trim() !== '' &&
+            raw.trim() !== 'null' &&
+            raw.trim() !== 'undefined' &&
+            !/[\r\n\x00-\x1F\x7F\u2028\u2029]/.test(raw)
+          ) {
+            stored = raw.trim();
+          }
+        }
+      } catch {
+        // localStorage inaccessible
+      }
+    }
+
+    if (stored) {
+      this.ephemeralFingerprint = stored;
+      return stored;
+    }
 
     const generated = this.generateDeviceFingerprint();
+    if (!generated) {
+      // Aucun CSPRNG disponible : ne rien envoyer. Le backend retombe alors
+      // sur un fingerprint IP + User-Agent (stable dans une session), au lieu
+      // d'un identifiant `Math.random` qui change à chaque chargement et fait
+      // révoquer toute la famille de refresh tokens (déconnexion globale).
+      return null;
+    }
+
     this.persistValue(this.deviceFingerprintStorageKey, generated);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(this.deviceFingerprintStorageKey, generated);
+      }
+    } catch {
+      // Ignorer si localStorage inaccessible
+    }
+
     this.ephemeralFingerprint = generated;
     return generated;
   }
 
-  private generateDeviceFingerprint(): string {
+  /**
+   * Génère l'empreinte d'appareil. Retourne `null` quand aucun générateur
+   * cryptographique n'existe : une valeur devinable ou volatile est pire
+   * qu'aucune valeur, car le backend révoque la famille sur mismatch.
+   */
+  private generateDeviceFingerprint(): string | null {
     const cryptoObj = (globalThis as any)?.crypto;
     if (cryptoObj?.randomUUID) {
       return cryptoObj.randomUUID();
@@ -2321,7 +2455,7 @@ export class HttpClient {
       cryptoObj.getRandomValues(bytes);
       return Array.from(bytes, (b: number) => b.toString(16).padStart(2, '0')).join('');
     }
-    return `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    return null;
   }
 
   private buildUrl(endpoint: string, params?: Record<string, any>): string {
@@ -2393,28 +2527,75 @@ export class HttpClient {
     return undefined;
   }
 
+  /**
+   * Lit un corps de réponse en s'arrêtant au plafond, sans matérialiser la
+   * totalité du flux. Une réponse d'erreur volumineuse (proxy mal configuré,
+   * serveur compromis) ne doit pas saturer la heap du client.
+   */
+  private async readBoundedBody(response: Response): Promise<string> {
+    const limit = HttpClient.MAX_ERROR_BODY_BYTES;
+    const stream = response.body as ReadableStream<Uint8Array> | null | undefined;
+
+    if (stream && typeof stream.getReader === 'function') {
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      let bytes = 0;
+
+      try {
+        while (bytes < limit) {
+          const { done, value } = await reader.read();
+          if (done || !value) break;
+          bytes += value.byteLength;
+          text += decoder.decode(value, { stream: true });
+        }
+      } finally {
+        try {
+          await reader.cancel();
+        } catch {
+          // Flux déjà terminé ou annulé par le runtime.
+        }
+      }
+
+      return text.slice(0, limit);
+    }
+
+    return (await response.text()).slice(0, limit);
+  }
+
   private async handleErrorResponse(response: Response, requestId?: string): Promise<never> {
     let errorData: any = {};
     try {
-      const parsed = await response.json();
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        errorData = {};
-        for (const [k, v] of Object.entries(parsed)) {
-          if (k !== '__proto__' && k !== 'constructor' && k !== 'prototype') {
-            errorData[k] = v;
+      const rawText = await this.readBoundedBody(response);
+
+      if (rawText.trim() !== '') {
+        try {
+          const parsed = JSON.parse(rawText);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const [k, v] of Object.entries(parsed)) {
+              if (k !== '__proto__' && k !== 'constructor' && k !== 'prototype') {
+                errorData[k] = v;
+              }
+            }
+          } else {
+            errorData = { message: String(parsed) };
+          }
+        } catch {
+          // Si le JSON a été tronqué au plafond de taille, extraire message/error sans parser l'objet complet
+          const msgMatch = rawText.match(/"message"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+          const errMatch = rawText.match(/"error"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+          if (msgMatch || errMatch) {
+            errorData = {
+              message: msgMatch ? msgMatch[1] : rawText,
+              error: errMatch ? errMatch[1] : undefined,
+            };
+          } else {
+            errorData = { message: rawText };
           }
         }
-      } else {
-        errorData = { message: String(parsed) };
       }
     } catch {
-      try {
-        const text = await response.text();
-        // Borner la taille maximale du message d'erreur pour éviter l'épuisement mémoire
-        errorData = { message: text.slice(0, 2048) };
-      } catch {
-        errorData = { message: response.statusText || 'Erreur inconnue' };
-      }
+      errorData = { message: response.statusText || 'Erreur inconnue' };
     }
 
     const rawMessage =
@@ -2529,8 +2710,9 @@ export class AuthModule {
    * Rafraîchissement explicite de la session client.
    *
    * Délègue au transport : le backend renouvelle à partir des cookies HttpOnly
-   * et répond `{ success: true }` sans token. Le paramètre n'est conservé que
-   * pour les backends exigeant un refresh token dans le corps.
+   * et répond `{ success: true }` sans token. Le paramètre permet de fournir un
+   * refresh token obtenu hors SDK ; il reste en mémoire et n'est **jamais**
+   * transmis (le backend ne lit que le cookie HttpOnly).
    */
   public async refreshToken(refreshToken?: string): Promise<CustomerRefreshTokenResponse> {
     const previousRefreshToken = refreshToken || this.http.getRefreshToken();
@@ -2913,11 +3095,17 @@ export class LoyaltyModule {
 
   /**
    * Échange des points contre une récompense.
+   *
+   * `Idempotency-Key` : le backend marque l'endpoint `@Idempotent`, mais
+   * n'applique la garde que si l'en-tête est présent. Une clé est donc générée
+   * par défaut (et reste stable à travers les réessais internes) ; l'appelant
+   * peut fournir la sienne pour rendre un réessai applicatif sûr.
    */
-  public async redeemReward(rewardId: string): Promise<RedemptionResult> {
+  public async redeemReward(rewardId: string, idempotencyKey?: string): Promise<RedemptionResult> {
     return this.http.request<RedemptionResult>(`/api/customers/loyalty/rewards/${encodeURIComponent(rewardId)}/redeem`, {
       method: 'POST',
-      requiresAuth: true
+      requiresAuth: true,
+      idempotencyKey: idempotencyKey ?? this.http.createIdempotencyKey()
     });
   }
 
@@ -2953,8 +3141,10 @@ export class LoyaltyModule {
 
   /**
    * Soumet une réclamation de points pour un avis Google rédigé.
+   * Une clé d'idempotence est générée par défaut pour éviter un double crédit
+   * si la requête est rejouée.
    */
-  public async claimGoogleReview(data: GoogleReviewClaimRequest): Promise<GoogleReviewClaimDTO> {
+  public async claimGoogleReview(data: GoogleReviewClaimRequest, idempotencyKey?: string): Promise<GoogleReviewClaimDTO> {
     const payload = {
       reviewerName: data.reviewerName || data.googleReviewerName || '',
       rating: data.rating ?? data.starRating ?? 5,
@@ -2964,7 +3154,8 @@ export class LoyaltyModule {
     return this.http.request<GoogleReviewClaimDTO>('/api/customers/google-review/claim', {
       method: 'POST',
       body: payload,
-      requiresAuth: true
+      requiresAuth: true,
+      idempotencyKey: idempotencyKey ?? this.http.createIdempotencyKey()
     });
   }
 
@@ -3238,9 +3429,7 @@ export class OrdersModule {
   }
 
   private generateIdempotencyKey(): string {
-    const cryptoObj = (globalThis as any)?.crypto;
-    if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
-    return `ord-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    return this.http.createIdempotencyKey();
   }
 
   /**

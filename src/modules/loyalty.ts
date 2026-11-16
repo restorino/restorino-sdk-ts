@@ -37,11 +37,17 @@ export class LoyaltyModule {
 
   /**
    * Échange des points contre une récompense.
+   *
+   * `Idempotency-Key` : le backend marque l'endpoint `@Idempotent`, mais
+   * n'applique la garde que si l'en-tête est présent. Une clé est donc générée
+   * par défaut (et reste stable à travers les réessais internes) ; l'appelant
+   * peut fournir la sienne pour rendre un réessai applicatif sûr.
    */
-  public async redeemReward(rewardId: string): Promise<RedemptionResult> {
+  public async redeemReward(rewardId: string, idempotencyKey?: string): Promise<RedemptionResult> {
     return this.http.request<RedemptionResult>(`/api/customers/loyalty/rewards/${encodeURIComponent(rewardId)}/redeem`, {
       method: 'POST',
-      requiresAuth: true
+      requiresAuth: true,
+      idempotencyKey: idempotencyKey ?? this.http.createIdempotencyKey()
     });
   }
 
@@ -77,8 +83,10 @@ export class LoyaltyModule {
 
   /**
    * Soumet une réclamation de points pour un avis Google rédigé.
+   * Une clé d'idempotence est générée par défaut pour éviter un double crédit
+   * si la requête est rejouée.
    */
-  public async claimGoogleReview(data: GoogleReviewClaimRequest): Promise<GoogleReviewClaimDTO> {
+  public async claimGoogleReview(data: GoogleReviewClaimRequest, idempotencyKey?: string): Promise<GoogleReviewClaimDTO> {
     const payload = {
       reviewerName: data.reviewerName || data.googleReviewerName || '',
       rating: data.rating ?? data.starRating ?? 5,
@@ -88,7 +96,8 @@ export class LoyaltyModule {
     return this.http.request<GoogleReviewClaimDTO>('/api/customers/google-review/claim', {
       method: 'POST',
       body: payload,
-      requiresAuth: true
+      requiresAuth: true,
+      idempotencyKey: idempotencyKey ?? this.http.createIdempotencyKey()
     });
   }
 

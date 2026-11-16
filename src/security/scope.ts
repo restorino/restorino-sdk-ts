@@ -28,6 +28,9 @@ const ALLOWED_EXACT: ReadonlySet<string> = new Set([
 /** Public vitrine reads: `/api/vitrine/{tenant}/public` and `/schema.json`. */
 const ALLOWED_VITRINE_READ = /^\/api\/vitrine\/[^/]+\/(public|schema\.json)$/;
 
+/** Profondeur maximale de décodage avant refus (fail closed). */
+const MAX_DECODE_DEPTH = 8;
+
 /**
  * Collapses `.` / `..` segments, duplicate slashes, backslashes and any
  * query/fragment. Used before matching so `/api/public/../admin/x`
@@ -61,10 +64,34 @@ export function isStorefrontEndpoint(endpoint: string): boolean {
     .split('?')[0]
     .split('#')[0];
 
-  // Un séparateur encodé (`%2F`, `%5C`) ou un point encodé (`%2E`) peut être
-  // décodé par un proxy intermédiaire et reconstruire un `/../` : refusé par
-  // principe, aucun chemin storefront légitime n'en contient.
-  if (/%2f|%5c|%00|%2e/i.test(rawPath)) return false;
+  // `;` ouvre les paramètres de matrice (`/api/public/..;/admin`) que certains
+  // conteneurs normalisent en traversée. Aucun endpoint du SDK n'en utilise.
+  if (rawPath.includes(';')) return false;
+
+  // Décodage récursif borné contre l'encodage imbriqué (%2e, %252e, %25252e…).
+  // Rejette tout séparateur (%2F, %5C), point (%2E) ou null byte (%00) à
+  // n'importe quel niveau. L'ancienne boucle plafonnée à 3 tours laissait
+  // passer 5 niveaux d'encodage : la borne est désormais explicite et tout
+  // reste d'encodage au-delà est refusé (fail closed).
+  let current = rawPath;
+  for (let depth = 0; ; depth++) {
+    if (/%2f|%5c|%00|%2e/i.test(current)) return false;
+
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(current);
+    } catch {
+      return false; // Séquence pourcent malformée rejetée fail-closed
+    }
+
+    if (decoded === current) break;
+    if (depth >= MAX_DECODE_DEPTH) return false;
+    current = decoded;
+  }
+
+  // `;` (paramètres de matrice) : `..;` n'est pas un segment `..` pour ce garde,
+  // mais certains proxys le normalisent en `..`. Refus fail-closed.
+  if (current.includes(';')) return false;
 
   const path = normalizeEndpointPath(endpoint);
 

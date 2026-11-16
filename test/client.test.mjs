@@ -776,10 +776,10 @@ test('LiveAgentSession: supports EventEmitter .on(), .off(), and unsubscribe cal
 
 test('AuthModule: refreshToken invokes /api/auth/refresh and updates tokens', async () => {
   const originalFetch = globalThis.fetch;
-  let refreshBody = null;
+  let refreshRequest = null;
 
   globalThis.fetch = async (url, options) => {
-    refreshBody = JSON.parse(options.body);
+    refreshRequest = { url: String(url), body: options.body, headers: options.headers };
     return {
       ok: true,
       status: 200,
@@ -805,7 +805,17 @@ test('AuthModule: refreshToken invokes /api/auth/refresh and updates tokens', as
     assert.equal(res.refreshToken, 'new-refresh-xyz');
     assert.equal(client.getToken(), 'new-token-abc');
     assert.equal(client.getRefreshToken(), 'new-refresh-xyz');
-    assert.equal(refreshBody.refreshToken, 'my-refresh-token');
+
+    // Le refresh token vit uniquement dans le cookie HttpOnly côté navigateur :
+    // le rejouer dans le corps ou un en-tête l'expose aux logs sans utilité.
+    assert.ok(refreshRequest.url.endsWith('/api/auth/refresh'), refreshRequest.url);
+    assert.equal(refreshRequest.body, undefined, 'refresh token must not travel in the body');
+    assert.equal(
+      Object.keys(refreshRequest.headers).some((k) => k.toLowerCase() === 'x-refresh-token'),
+      false,
+      'refresh token must not travel in a header'
+    );
+    assert.equal(refreshRequest.headers['X-Auth-Scope'], 'customer');
   } finally {
     globalThis.fetch = originalFetch;
   }

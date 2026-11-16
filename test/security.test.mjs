@@ -42,6 +42,11 @@ test('Security: baseUrl rejects protocol-relative and credential-bearing URLs', 
   assert.throws(() => client({ baseUrl: 'https://user:secret@api.restorino.com' }), /identifiants/);
 });
 
+test('Security: baseUrl rejects query parameters and fragments', () => {
+  assert.throws(() => client({ baseUrl: 'https://api.restorino.com?env=staging' }), /paramètres de requête/);
+  assert.throws(() => client({ baseUrl: 'https://api.restorino.com#target' }), /paramètres de requête/);
+});
+
 test('Security: baseUrl accepts https and same-origin relative paths', () => {
   assert.equal(client({ baseUrl: 'https://api.restorino.com/' }).http.getConfig().baseUrl, 'https://api.restorino.com');
   assert.equal(client({ baseUrl: '/api' }).http.getConfig().baseUrl, '/api');
@@ -324,6 +329,57 @@ test('Security: sharing one AbortSignal across requests does not leak listeners'
 
     assert.equal(registered, 5);
     assert.equal(removed, 5, 'every listener must be removed once the request settles');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// ─── Transport hardening ─────────────────────────────────────────────────────
+
+test('Security: plaintext http baseUrl is refused outside the local network', () => {
+  assert.throws(() => client({ baseUrl: 'http://api.restorino.com' }), /réseau local/);
+
+  // Loopback et LAN restent utilisables (dev, terminal POS local).
+  for (const baseUrl of ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://192.168.1.20:8080']) {
+    assert.equal(client({ baseUrl }).http.getConfig().baseUrl, baseUrl, `rejected ${baseUrl}`);
+  }
+});
+
+test('Security: value-bearing loyalty mutations send an Idempotency-Key', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), key: options.headers['Idempotency-Key'] });
+    return jsonResponse({ id: 'r1', name: 'Free coffee', availablePoints: 10 });
+  };
+
+  try {
+    const c = client();
+    await c.loyalty.redeemReward('11111111-1111-4111-8111-111111111111');
+    await c.loyalty.claimGoogleReview({ reviewerName: 'Ada', rating: 5, reviewComment: 'ok' });
+
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.ok(call.key && call.key.length >= 16, `missing Idempotency-Key on ${call.url}`);
+    }
+    assert.notEqual(calls[0].key, calls[1].key, 'each call must get its own key');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('Security: an app-supplied idempotency key is preserved', async () => {
+  const original = globalThis.fetch;
+  let seenKey = null;
+  globalThis.fetch = async (url, options) => {
+    seenKey = options.headers['Idempotency-Key'];
+    return jsonResponse({ id: 'r1', name: 'Free coffee', availablePoints: 10 });
+  };
+
+  try {
+    const c = client();
+    await c.loyalty.redeemReward('11111111-1111-4111-8111-111111111111', 'app-supplied-key-1234');
+    assert.equal(seenKey, 'app-supplied-key-1234');
   } finally {
     globalThis.fetch = original;
   }

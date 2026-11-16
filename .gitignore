@@ -1,12 +1,58 @@
-node_modules
-dist
-coverage
-*.tsbuildinfo
+# Dependencies & Package Managers
+node_modules/
+/.pnp
+.pnp.js
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
 
-# Secrets locaux — .env.example reste versionné.
+# Build & Types
+dist/
+build/
+*.tsbuildinfo
+.eslintcache
+
+# Testing & Coverage
+coverage/
+test-results/
+
+# Secrets locaux — .env.example reste versionné
 .env
+.env.*
+!.env.example
+!.env.*.example
 .env.local
 .env.*.local
+*.pem
+*.key
+*.cert
 
-*.log
+# OS & Editor files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+*.swp
+*.swo
+*~
+
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Tooling & Agent state
+.agents/
+.superpowers/
+__pycache__/
+*.py[cod]
+.codebase-monitor-*
+**/.codebase-monitor-*

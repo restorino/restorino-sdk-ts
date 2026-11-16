@@ -87,8 +87,9 @@ export class AuthModule {
    * Rafraîchissement explicite de la session client.
    *
    * Délègue au transport : le backend renouvelle à partir des cookies HttpOnly
-   * et répond `{ success: true }` sans token. Le paramètre n'est conservé que
-   * pour les backends exigeant un refresh token dans le corps.
+   * et répond `{ success: true }` sans token. Le paramètre permet de fournir un
+   * refresh token obtenu hors SDK ; il reste en mémoire et n'est **jamais**
+   * transmis (le backend ne lit que le cookie HttpOnly).
    */
   public async refreshToken(refreshToken?: string): Promise<CustomerRefreshTokenResponse> {
     const previousRefreshToken = refreshToken || this.http.getRefreshToken();

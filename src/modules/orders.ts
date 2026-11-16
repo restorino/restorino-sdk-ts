@@ -36,9 +36,7 @@ export class OrdersModule {
   }
 
   private generateIdempotencyKey(): string {
-    const cryptoObj = (globalThis as any)?.crypto;
-    if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
-    return `ord-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    return this.http.createIdempotencyKey();
   }
 
   /**

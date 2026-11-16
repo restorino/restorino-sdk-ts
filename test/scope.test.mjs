@@ -111,12 +111,26 @@ test('Scope: traversal and encoded tricks cannot escape the allowlist', () => {
     '/api/customers/../../internal/tools',
     '/api/public/restaurants/..%2F..%2Fadmin',
     '//api/admin/users',
-    '/api/public/./../../pos/sessions'
+    '/api/public/./../../pos/sessions',
+    '/api/public/%252e%252e%252fadmin/users',
+    '/api/public/%25252e%25252e/admin',
+    '/api/public/restaurants/%252f..%252fadmin',
+    // Encodages imbriqués plus profonds : la borne de décodage doit refuser
+    // au lieu de laisser passer la chaîne encore encodée.
+    '/api/public/%2525252e%2525252e/admin/users',
+    '/api/public/%252525252e%252525252e/admin/users',
+    '/api/public/%252525252fadmin',
+    '/api/public/%25252525252e%25252525252e/admin/users',
+    // Paramètres de matrice : certains conteneurs normalisent `..;` en `..`.
+    '/api/public/..;/admin/users'
   ];
 
   for (const attempt of attempts) {
     assert.equal(isStorefrontEndpoint(attempt), false, `traversal not blocked: ${attempt}`);
   }
+
+  // Les caractères encodés légitimes (ex: accents) restent autorisés
+  assert.equal(isStorefrontEndpoint('/api/public/menu/resto/caf%C3%A9'), true);
 });
 
 // ─── Enforcement: blocked before any network call ────────────────────────────
