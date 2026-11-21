@@ -774,6 +774,55 @@ test('LiveAgentSession: supports EventEmitter .on(), .off(), and unsubscribe cal
   }
 });
 
+test('LiveAgentSession: confirmAction sends the actionId carried by an ACTION_* frame', () => {
+  const originalWebSocket = globalThis.WebSocket;
+  let mockWsInstance = null;
+  const sent = [];
+
+  class MockWebSocket {
+    static OPEN = 1;
+    constructor(url) {
+      this.url = url;
+      this.readyState = 1;
+      mockWsInstance = this;
+    }
+    send(payload) { sent.push(JSON.parse(payload)); }
+    close() {}
+  }
+  globalThis.WebSocket = MockWebSocket;
+
+  try {
+    const client = new RestorinoClient({
+      baseUrl: 'https://api.restorino.com',
+      restaurantId: 'test-rest',
+      storageType: 'memory'
+    });
+
+    let pending = null;
+    const session = client.liveAgent.connect({
+      restaurantSlug: 'test-rest',
+      grant: 'test-grant',
+      onClientAction: (action) => { pending = action; }
+    });
+
+    mockWsInstance.onmessage({
+      data: JSON.stringify({
+        type: 'ACTION_ORDER_PENDING',
+        payload: { actionId: 'act-7', action: 'place_voice_order' }
+      })
+    });
+
+    assert.ok(pending, 'ACTION_ORDER_PENDING must reach onClientAction');
+    assert.equal(pending.action, 'ACTION_ORDER_PENDING');
+    assert.equal(pending.actionId, 'act-7', 'actionId must be lifted out of payload');
+
+    session.confirmAction(pending.actionId);
+    assert.deepEqual(sent, [{ type: 'CONFIRM_ACTION', actionId: 'act-7' }]);
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
 test('AuthModule: refreshToken invokes /api/auth/refresh and updates tokens', async () => {
   const originalFetch = globalThis.fetch;
   let refreshRequest = null;

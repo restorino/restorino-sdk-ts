@@ -641,7 +641,7 @@ import { createPcmPlayer } from '@restorino/sdk';
 
 const player = createPcmPlayer();            // mono, 24 kHz by default
 
-const session = api.liveAgent.connect({
+const session = await api.liveAgent.connect({
   restaurantSlug: slug,
   onStatusChange: setAgentStatus,
   onTranscript: (role, text) => appendMessage(role, text),

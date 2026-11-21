@@ -368,10 +368,10 @@ test('Contract: liveAgent mints a session grant before opening the socket', asyn
   const { calls, restore } = captureFetch({ grant: 'grant-xyz' });
 
   try {
-    const session = client.liveAgent.connect({ restaurantSlug: 'bella-vita' });
-    assert.ok(session);
-
-    await sleep(50);
+    // Sans `grant`, connect() est asynchrone : le socket n'est ouvert qu'après
+    // l'aller-retour HTTP, donc la promesse porte le contrat.
+    const session = await client.liveAgent.connect({ restaurantSlug: 'bella-vita' });
+    assert.equal(typeof session.confirmAction, 'function');
 
     assert.ok(
       calls[0].url.endsWith('/api/public/live-agent/bella-vita/session'),
@@ -382,6 +382,113 @@ test('Contract: liveAgent mints a session grant before opening the socket', asyn
     assert.ok(createdUrl.includes('restaurantSlug=bella-vita'));
   } finally {
     restore();
+    globalThis.WebSocket = originalWs;
+  }
+});
+
+test('Contract: liveAgent routes ACTION_* frames to onClientAction with payload.actionId', () => {
+  const client = newClient();
+  const originalWs = globalThis.WebSocket;
+  let mockWs = null;
+
+  class MockWebSocket {
+    static OPEN = 1;
+    constructor(url) {
+      this.url = url;
+      this.readyState = 1;
+      mockWs = this;
+    }
+    send() {}
+    close() {}
+  }
+
+  globalThis.WebSocket = MockWebSocket;
+
+  try {
+    const received = [];
+    const session = client.liveAgent.connect({
+      restaurantSlug: 'bella-vita',
+      grant: 'grant-xyz',
+      onClientAction: (action) => received.push(action)
+    });
+
+    let emitted = null;
+    session.on('action', (action) => { emitted = action; });
+
+    // Cadre réel du backend : aucun `action` de premier niveau, l'actionId et
+    // les champs métier vivent dans `payload`.
+    mockWs.onmessage({
+      data: JSON.stringify({
+        type: 'ACTION_RESERVATION_PENDING',
+        title: 'Vérifier la réservation',
+        payload: { actionId: 'act-42', action: 'book_table', date: '2026-12-24', guests: 4 }
+      })
+    });
+
+    assert.equal(received.length, 1, 'ACTION_* frames must reach onClientAction');
+    assert.equal(received[0].action, 'ACTION_RESERVATION_PENDING');
+    assert.equal(received[0].actionId, 'act-42', 'actionId lives in payload for pending actions');
+    assert.equal(received[0].payload.guests, 4);
+    assert.equal(received[0].payload.title, undefined, 'payload is the frame payload, not the whole frame');
+    assert.deepEqual(emitted, received[0], "the 'action' event carries the same action");
+
+    // Un cadre de contrôle dont le *message* ressemble à une action n'en est pas une.
+    mockWs.onmessage({ data: JSON.stringify({ type: 'ERROR', message: 'ACTION_EXPIRED' }) });
+    assert.equal(received.length, 1, 'ERROR frames must never be treated as actions');
+
+    // Sans objet `payload`, le cadre lui-même (assaini) sert de payload.
+    mockWs.onmessage({ data: JSON.stringify({ type: 'ACTION_NAVIGATE_CATEGORY', categoryId: 'c-1' }) });
+    assert.equal(received[1].action, 'ACTION_NAVIGATE_CATEGORY');
+    assert.equal(received[1].payload.categoryId, 'c-1');
+    assert.equal(received[1].actionId, undefined);
+
+    // Compatibilité : les cadres historiques à `action` de premier niveau.
+    mockWs.onmessage({ data: JSON.stringify({ action: 'ADD_TO_CART', actionId: 'legacy-1' }) });
+    assert.equal(received[2].action, 'ADD_TO_CART');
+    assert.equal(received[2].actionId, 'legacy-1');
+  } finally {
+    globalThis.WebSocket = originalWs;
+  }
+});
+
+test('Contract: liveAgent connect() rejects when the grant endpoint returns 403', async () => {
+  const client = newClient();
+  const originalWs = globalThis.WebSocket;
+  const originalFetch = globalThis.fetch;
+  let socketOpened = false;
+
+  class MockWebSocket {
+    static OPEN = 1;
+    constructor() {
+      socketOpened = true;
+      this.readyState = 1;
+    }
+    send() {}
+    close() {}
+  }
+
+  globalThis.WebSocket = MockWebSocket;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 403,
+    statusText: 'Forbidden',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    json: async () => ({ error: 'PLAN_REQUIRED', message: 'Live voice agent requires Professional plan' })
+  });
+
+  try {
+    await assert.rejects(
+      client.liveAgent.connect({ restaurantSlug: 'bella-vita' }),
+      (err) => {
+        assert.equal(err.status, 403);
+        assert.equal(err.error, 'SESSION_GRANT_FAILED');
+        assert.match(err.message, /403/, 'the HTTP status must be surfaced to the caller');
+        return true;
+      }
+    );
+    assert.equal(socketOpened, false, 'no socket may be opened without a grant');
+  } finally {
+    globalThis.fetch = originalFetch;
     globalThis.WebSocket = originalWs;
   }
 });

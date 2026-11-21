@@ -1,0 +1,56 @@
+name: SDK Release & Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    name: Build, Test & Publish to NPM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned: Node 20 is EOL and unpatched for CVE-2026-111497 (Brotli)
+          node-version: '24.22.1'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check sources
+        run: pnpm run typecheck
+
+      - name: Type-check reference example
+        run: pnpm run typecheck:examples
+
+      - name: Unit, contract, security and docs tests
+        run: pnpm test
+
+      - name: Publish to NPM
+        run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-bundle/restorino-sdk.ts
+            LOVABLE_1SHOT_PROMPT.txt
+            prompt.txt
+            llms.txt
+          generate_release_notes: true

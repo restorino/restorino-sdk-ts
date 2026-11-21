@@ -82,27 +82,60 @@ export interface LiveAgentAudioMeta {
 
 /**
  * Statuts possibles de l'agent vocal en temps réel.
+ *
+ * Le backend émet `{"type":"STATUS","message":"READY"|"LISTENING"|"THINKING"}` :
+ * `READY` fait donc partie du contrat. `UPSTREAM_DISCONNECTED` a été retiré,
+ * il n'est émis par aucune branche du serveur.
  */
 export type LiveAgentStatus =
   | 'CONNECTING'
   | 'CONNECTED'
+  | 'READY'
   | 'LISTENING'
   | 'THINKING'
   | 'SPEAKING'
   | 'INTERRUPTED'
-  | 'UPSTREAM_DISCONNECTED'
   | 'DISCONNECTED'
   | 'ERROR';
 
 /**
- * Action déclenchée par l'agent vocal sur le panier ou l'interface du client.
+ * Action émise par l'agent vocal à destination de la vitrine.
+ *
+ * Le backend envoie `{"type":"ACTION_CART_ADD","payload":{…}}` : `action`
+ * reprend le vocabulaire serveur (`ACTION_*`) pour ne rien perdre. Les cadres
+ * historiques portant un `action` de premier niveau conservent `ADD_TO_CART`,
+ * `NAVIGATE` et `SELECT_ITEM`.
  */
 export interface LiveAgentClientAction {
-  action: 'ADD_TO_CART' | 'NAVIGATE' | 'SELECT_ITEM' | string;
+  action: LiveAgentClientActionType;
+  /**
+   * Corps de l'action. Pour `ACTION_RESERVATION_PENDING` / `ACTION_ORDER_PENDING`
+   * il contient `actionId` et `action` (nom de l'outil serveur).
+   */
   payload: Record<string, any>;
   /** Identifiant à renvoyer via `confirmAction()` pour appliquer l'action. */
   actionId?: string;
 }
+
+/**
+ * Vocabulaire des actions : types `ACTION_*` émis par le backend, plus les
+ * alias historiques (`ADD_TO_CART`, `NAVIGATE`, `SELECT_ITEM`).
+ */
+export type LiveAgentClientActionType =
+  | 'ADD_TO_CART'
+  | 'NAVIGATE'
+  | 'SELECT_ITEM'
+  | 'ACTION_CART_ADD'
+  | 'ACTION_RESERVATION_PENDING'
+  | 'ACTION_RESERVATION_CREATED'
+  | 'ACTION_ORDER_PENDING'
+  | 'ACTION_ORDER_PLACED'
+  | 'ACTION_ORDER_TRACKING'
+  | 'ACTION_AVAILABILITY_CONFIRMED'
+  | 'ACTION_AVAILABILITY_UNAVAILABLE'
+  | 'ACTION_NAVIGATE_CATEGORY'
+  | 'ACTION_DISH_RECOMMENDATION'
+  | string;
 
 /**
  * Noms d'événements supportés par la session de l'agent vocal en temps réel.

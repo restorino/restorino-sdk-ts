@@ -163,7 +163,7 @@ if (promo.valid) {
 
 ### Agent Vocal & Conseiller Culinaire Interactif (Gemini Live)
 ```typescript
-const session = api.liveAgent.connect({
+const session = await api.liveAgent.connect({
   restaurantSlug: 'pizza-palace',
   onTranscript: (role, text) => {
     console.log(`${role === 'user' ? 'Client' : 'Conseiller'}: ${text}`);
@@ -173,7 +173,7 @@ const session = api.liveAgent.connect({
     playPcmAudio(audioPcmChunk);
   },
   onClientAction: (action) => {
-    if (action.action === 'ADD_TO_CART') {
+    if (action.action === 'ACTION_CART_ADD' || action.action === 'ADD_TO_CART') {
       console.log('Plat ajouté au panier vocalement :', action.payload);
     }
   },

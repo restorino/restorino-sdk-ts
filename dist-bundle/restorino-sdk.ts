@@ -1450,27 +1450,60 @@ export interface LiveAgentAudioMeta {
 
 /**
  * Statuts possibles de l'agent vocal en temps réel.
+ *
+ * Le backend émet `{"type":"STATUS","message":"READY"|"LISTENING"|"THINKING"}` :
+ * `READY` fait donc partie du contrat. `UPSTREAM_DISCONNECTED` a été retiré,
+ * il n'est émis par aucune branche du serveur.
  */
 export type LiveAgentStatus =
   | 'CONNECTING'
   | 'CONNECTED'
+  | 'READY'
   | 'LISTENING'
   | 'THINKING'
   | 'SPEAKING'
   | 'INTERRUPTED'
-  | 'UPSTREAM_DISCONNECTED'
   | 'DISCONNECTED'
   | 'ERROR';
 
 /**
- * Action déclenchée par l'agent vocal sur le panier ou l'interface du client.
+ * Action émise par l'agent vocal à destination de la vitrine.
+ *
+ * Le backend envoie `{"type":"ACTION_CART_ADD","payload":{…}}` : `action`
+ * reprend le vocabulaire serveur (`ACTION_*`) pour ne rien perdre. Les cadres
+ * historiques portant un `action` de premier niveau conservent `ADD_TO_CART`,
+ * `NAVIGATE` et `SELECT_ITEM`.
  */
 export interface LiveAgentClientAction {
-  action: 'ADD_TO_CART' | 'NAVIGATE' | 'SELECT_ITEM' | string;
+  action: LiveAgentClientActionType;
+  /**
+   * Corps de l'action. Pour `ACTION_RESERVATION_PENDING` / `ACTION_ORDER_PENDING`
+   * il contient `actionId` et `action` (nom de l'outil serveur).
+   */
   payload: Record<string, any>;
   /** Identifiant à renvoyer via `confirmAction()` pour appliquer l'action. */
   actionId?: string;
 }
+
+/**
+ * Vocabulaire des actions : types `ACTION_*` émis par le backend, plus les
+ * alias historiques (`ADD_TO_CART`, `NAVIGATE`, `SELECT_ITEM`).
+ */
+export type LiveAgentClientActionType =
+  | 'ADD_TO_CART'
+  | 'NAVIGATE'
+  | 'SELECT_ITEM'
+  | 'ACTION_CART_ADD'
+  | 'ACTION_RESERVATION_PENDING'
+  | 'ACTION_RESERVATION_CREATED'
+  | 'ACTION_ORDER_PENDING'
+  | 'ACTION_ORDER_PLACED'
+  | 'ACTION_ORDER_TRACKING'
+  | 'ACTION_AVAILABILITY_CONFIRMED'
+  | 'ACTION_AVAILABILITY_UNAVAILABLE'
+  | 'ACTION_NAVIGATE_CATEGORY'
+  | 'ACTION_DISH_RECOMMENDATION'
+  | string;
 
 /**
  * Noms d'événements supportés par la session de l'agent vocal en temps réel.
@@ -3836,6 +3869,60 @@ export class TablesModule {
 // SOURCE: modules/live-agent.ts
 // ==========================================
 
+/** Cadres de contrôle : jamais des actions, même si leur message contient
+ *  `ACTION_…` (ex. `{"type":"ERROR","message":"ACTION_EXPIRED"}`). */
+const NON_ACTION_FRAMES = new Set([
+  'ERROR',
+  'AUDIO_META',
+  'TRANSCRIPT',
+  'STATUS',
+  'INTERRUPTED',
+  'SESSION_ENDED'
+]);
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Le backend émet ses actions sous la forme
+ * `{"type":"ACTION_CART_ADD","payload":{…}}`, sans `action` de premier niveau.
+ */
+function isActionFrame(data: any): boolean {
+  return (
+    typeof data.type === 'string' &&
+    data.type.startsWith('ACTION_') &&
+    !NON_ACTION_FRAMES.has(data.type)
+  );
+}
+
+/**
+ * Copie de surface sans clés de pollution de prototype. `JSON.parse` crée une
+ * propriété propre `__proto__` (contrairement à la syntaxe objet) : la recopier
+ * dans un objet littéral écraserait son prototype.
+ */
+function sanitizeRecord(source: Record<string, any>): Record<string, any> {
+  const safe: Record<string, any> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') {
+      safe[key] = value;
+    }
+  }
+  return safe;
+}
+
+/**
+ * Les actions en attente portent leur identifiant dans `payload.actionId`
+ * (`ACTION_RESERVATION_PENDING` / `ACTION_ORDER_PENDING`) ; les cadres
+ * historiques le portent à la racine. `confirmAction()` exige cet identifiant.
+ */
+function pickActionId(data: Record<string, any>): string | undefined {
+  if (isRecord(data.payload) && typeof data.payload.actionId === 'string') {
+    return data.payload.actionId;
+  }
+  return typeof data.actionId === 'string' ? data.actionId : undefined;
+}
+
 /**
  * Handle d'une session active avec l'agent vocal interactif Gemini Live.
  */
@@ -3970,16 +4057,22 @@ export class LiveAgentSession {
               if (this.config.onError) this.config.onError(err);
               this.emit('error', err);
               this.updateStatus('ERROR');
+            } else if (isActionFrame(data)) {
+              // Sans cette branche, aucune action n'atteignait le consommateur :
+              // le serveur n'envoie pas de `action` de premier niveau, donc
+              // `confirmAction(actionId)` était inutilisable.
+              const actionPayload: LiveAgentClientAction = {
+                action: data.type,
+                payload: isRecord(data.payload) ? sanitizeRecord(data.payload) : sanitizeRecord(data),
+                actionId: pickActionId(data)
+              };
+              if (this.config.onClientAction) this.config.onClientAction(actionPayload);
+              this.emit('action', actionPayload);
             } else if (data.action && typeof data.action === 'string') {
-              const safePayload: Record<string, any> = {};
-              for (const [k, v] of Object.entries(data)) {
-                if (k !== '__proto__' && k !== 'constructor' && k !== 'prototype') {
-                  safePayload[k] = v;
-                }
-              }
+              // Compatibilité : cadres historiques `{ action, actionId }`.
               const actionPayload: LiveAgentClientAction = {
                 action: data.action,
-                payload: safePayload,
+                payload: sanitizeRecord(data),
                 actionId: typeof data.actionId === 'string' ? data.actionId : undefined
               };
               if (this.config.onClientAction) this.config.onClientAction(actionPayload);
@@ -4119,10 +4212,14 @@ export class LiveAgentModule {
   /**
    * Démarre une session vocale interactive avec le conseiller virtuel du restaurant.
    *
-   * Le jeton de session est demandé de façon asynchrone ; la poignée retournée
-   * expose l'état via `getStatus()` et les callbacks de configuration.
+   * Sans `grant`, le SDK demande d'abord un jeton au backend : `connect()`
+   * retourne alors une promesse qui **rejette** si le grant est refusé (le
+   * backend est *fail-closed* : `SESSION_GRANT_REQUIRED`, close 1008, aucun
+   * socket utile sans grant). Fournir `grant` garde `connect()` synchrone.
    */
-  public connect(config: LiveAgentSessionConfig): LiveAgentSession {
+  public connect(config: LiveAgentSessionConfig & { grant: string }): LiveAgentSession;
+  public connect(config: LiveAgentSessionConfig): Promise<LiveAgentSession>;
+  public connect(config: LiveAgentSessionConfig): LiveAgentSession | Promise<LiveAgentSession> {
     const rawSlug = config.restaurantSlug || this.http.getConfig().restaurantId || '';
     const slug = rawSlug.replace(/[\r\n\x00-\x1F\x7F\u2028\u2029]/g, '').trim();
 
@@ -4135,14 +4232,6 @@ export class LiveAgentModule {
       throw new Error("L'URL WebSocket doit obligatoirement commencer par 'ws://' ou 'wss://'.");
     }
 
-    const urlProvider = async (): Promise<string> => {
-      const grant = await this.requestSessionGrant(slug);
-      return this.appendQuery(explicitWsUrl || this.buildDefaultWsUrl(), {
-        restaurantSlug: slug,
-        grant: grant || undefined
-      });
-    };
-
     // Un `grant` fourni par l'appelant évite l'aller-retour HTTP et garde
     // `connect()` synchrone (utile en SSR/test et pour les jetons pré-obtenus).
     if (config.grant) {
@@ -4153,26 +4242,62 @@ export class LiveAgentModule {
       return new LiveAgentSession(config, url);
     }
 
-    return new LiveAgentSession(config, urlProvider);
+    return this.openSession(config, slug, explicitWsUrl);
+  }
+
+  /** Obtient le grant **avant** d'ouvrir le socket, et propage l'échec. */
+  private async openSession(
+    config: LiveAgentSessionConfig,
+    slug: string,
+    explicitWsUrl?: string
+  ): Promise<LiveAgentSession> {
+    const grant = await this.requestSessionGrant(slug);
+    const url = this.appendQuery(explicitWsUrl || this.buildDefaultWsUrl(), {
+      restaurantSlug: slug,
+      grant
+    });
+    return new LiveAgentSession(config, url);
   }
 
   /**
    * Obtient un jeton de session à usage unique.
-   * Retourne `null` si l'environnement ne l'exige pas (dev sans secret).
+   * Tout refus est propagé avec son statut HTTP : ouvrir le socket sans grant
+   * ne produisait qu'une fermeture 1008 côté serveur, sans explication.
    */
-  private async requestSessionGrant(slug: string): Promise<string | null> {
+  private async requestSessionGrant(slug: string): Promise<string> {
+    let response: { grant?: string } | null;
     try {
-      const response = await this.http.request<{ grant?: string }>(
+      response = await this.http.request<{ grant?: string }>(
         `/api/public/live-agent/${encodeURIComponent(slug)}/session`,
         { method: 'POST', skipAuthRefresh: true, retries: 0 }
       );
-      return response && typeof response.grant === 'string' ? response.grant : null;
     } catch (err) {
-      if (err instanceof RestorinoApiError && [401, 403, 404, 429].includes(err.status)) {
-        return null;
+      if (err instanceof RestorinoApiError) {
+        const denied = new RestorinoApiError(
+          err.status,
+          `Live Agent : grant de session refusé (HTTP ${err.status}). Le serveur rejette toute connexion sans grant (SESSION_GRANT_REQUIRED).`,
+          'SESSION_GRANT_FAILED',
+          err.field,
+          err
+        );
+        // Conserve les métadonnées utiles au backoff et au support.
+        denied.requestId = err.requestId;
+        denied.retryAfterMs = err.retryAfterMs;
+        throw denied;
       }
       throw err;
     }
+
+    if (!response || typeof response.grant !== 'string' || response.grant.length === 0) {
+      throw new RestorinoApiError(
+        200,
+        'Live Agent : la réponse du serveur ne contient aucun grant de session.',
+        'INVALID_RESPONSE',
+        undefined,
+        response
+      );
+    }
+    return response.grant;
   }
 
   /**
