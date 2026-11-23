@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # Pinned: Node 20 is EOL and unpatched for CVE-2026-111497 (Brotli).
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
 
       - run: npm ci
@@ -46,7 +46,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
 
       - run: npm ci
