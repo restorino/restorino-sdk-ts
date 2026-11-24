@@ -20,7 +20,7 @@ jobs:
           # Pinned: Node 20 is EOL and unpatched for CVE-2026-111497 (Brotli).
           node-version: '24.22.3'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.33.2
 
