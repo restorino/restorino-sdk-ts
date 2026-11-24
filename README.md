@@ -1,223 +1,327 @@
-# @restorino/sdk — TypeScript SDK pour Storefront & Espace Client
+# Restorino TypeScript SDK (`@restorino/sdk`)
 
-SDK officiel TypeScript pour intégrer l'API **Restorino Restaurant SaaS** dans vos applications frontend (**Lovable.dev**, **v0**, **Bolt**, **Next.js**, **Vite / React**).
+[![npm version](https://img.shields.io/npm/v/@restorino/sdk.svg?style=flat-square&color=0070F3)](https://www.npmjs.com/package/@restorino/sdk)
+[![npm downloads](https://img.shields.io/npm/dm/@restorino/sdk.svg?style=flat-square&color=blue)](https://www.npmjs.com/package/@restorino/sdk)
+[![license](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](./LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue.svg?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-24.22.3-green.svg?style=flat-square&logo=node.js)](https://nodejs.org/)
+[![Lovable Ready](https://img.shields.io/badge/Lovable.dev-Ready-ff4081.svg?style=flat-square)](https://lovable.dev)
+[![Provenance: Sigstore](https://img.shields.io/badge/Provenance-Sigstore%20Verified-informational.svg?style=flat-square)](https://search.sigstore.dev)
 
----
-
-## ⚡ Prise en main ultra-rapide avec Lovable.dev
-
-Le SDK est disponible en **fichier unique autonome** (Zero-Dependency) :
-👉 [`dist-bundle/restorino-sdk.ts`](./dist-bundle/restorino-sdk.ts)
-
----
-
-## 🎯 Périmètre Exclusif : Vitrines & Sites Storefront
-
-Ce SDK est **strictement conçu et limité** aux sites vitrines publics, tunnels de commande en ligne et espaces clients finaux :
-- ✅ **Visiteurs anonymes** : Découverte du restaurant, consultation des cartes & menus, vérification de zone de livraison, SEO & réseaux sociaux.
-- ✅ **Clients en ligne** : Passage de commande (Livraison, À emporter, À table via QR code), estimation des frais, réservation de table.
-- ✅ **Comptes clients (`ROLE_CUSTOMER`)** : Connexion classique ou Google, suivi des commandes, solde fidélité, parrainage, avis.
-- 🚫 **Exclusion totale du Backoffice** : Ce SDK ne contient **aucun** endpoint d'administration, de gestion du personnel, de caisse (POS), de gestion des stocks ou de comptabilité. Ces fonctions sont réservées à l'API interne du dashboard restaurateur.
+> **The Official TypeScript & JavaScript SDK for the Restorino Restaurant SaaS Platform.**
+> Build high-conversion restaurant storefronts, digital QR menus, food delivery ordering flows, table booking, loyalty portals, and interactive AI voice assistants with Next.js, React, Vite, or Lovable.dev.
 
 ---
 
-### 1. Copier le fichier dans Lovable
-Copiez le contenu de `dist-bundle/restorino-sdk.ts` directement dans votre projet Lovable dans le fichier :
-`src/lib/restorino-sdk.ts`
+## 📑 Table of Contents
 
-### 2. Initialiser le client
-Créez `src/lib/api.ts` :
+- [Overview](#-overview)
+- [Key Features](#-key-features)
+- [Quick Installation](#-quick-installation)
+- [Architecture & Modules](#-architecture--modules)
+- [Code Examples](#-code-examples)
+  - [1. Initialize Client](#1-initialize-client)
+  - [2. Fetch Digital Menus & Categories](#2-fetch-digital-menus--categories)
+  - [3. Online Food Ordering (Delivery, Takeaway, Dine-in QR)](#3-online-food-ordering)
+  - [4. Customer Authentication & Profile](#4-customer-authentication--profile)
+  - [5. Loyalty Rewards & Points](#5-loyalty-rewards--points)
+  - [6. Real-Time Courier Tracking](#6-real-time-courier-tracking)
+  - [7. AI Live Culinary Assistant (Gemini Voice & Chat)](#7-ai-live-culinary-assistant-gemini-voice--chat)
+- [Zero-Dependency Standalone Bundle (Lovable.dev / v0 / Bolt)](#-zero-dependency-standalone-bundle)
+- [Security & Scope Boundary](#-security--scope-boundary)
+- [TypeScript Support](#-typescript-support)
+- [Contributing & Testing](#-contributing--testing)
+- [License](#-license)
+
+---
+
+## 🚀 Overview
+
+**`@restorino/sdk`** provides a complete, strongly-typed interface to connect any modern web or mobile app to Restorino's restaurant backend API. Designed with a strict focus on public storefronts, customer self-service portals, and headless restaurant experiences, it handles:
+
+- 🍕 **Digital Menus & Items**: Catalogs, categories, modifiers, allergens, and daypart pricing.
+- 🛵 **Multi-Channel Ordering**: Delivery, Takeaway (Click & Collect), and In-restaurant QR Ordering.
+- 📅 **Table Reservations**: Real-time table booking and capacity estimation.
+- ⭐ **Loyalty & Referral Programs**: Automated point rewards, tiers (Bronze/Silver/Gold/Platinum), and Google Review incentives.
+- 📍 **Live Courier Telemetry**: Real-time GPS driver tracking and delivery status transitions.
+- 🎙️ **Interactive AI Voice Agent**: Low-latency bidirectional voice and action dispatch powered by Google Gemini Live WebSockets.
+
+---
+
+## ✨ Key Features
+
+| Feature | Description |
+| :--- | :--- |
+| **Fully Typed (TypeScript)** | Autocomplete, strict input/output DTOs, and compile-time contract safety. |
+| **Dual Build (ESM + CJS)** | Compatible with Next.js (App & Pages Router), Vite, Remix, Astro, Node.js, and browser environments. |
+| **Zero External Runtime Dependencies** | Lightweight footprint (`160 kB` packaged) with zero bloated third-party dependencies. |
+| **1-File Standalone Bundle** | Single-file zero-install export (`dist-bundle/restorino-sdk.ts`) for AI visual site builders (**Lovable.dev**, **v0.dev**, **Bolt.new**). |
+| **Built-in Resilience** | Exponential backoff, jittered retries on 503/network failure, and automatic 401 token refresh. |
+| **Enterprise Security Sandbox** | Client-side allowlist preventing path traversal, SSRF, CRLF header injection, and unauthorized admin API calls. |
+
+---
+
+## 📦 Quick Installation
+
+Install via your preferred package manager:
+
+```bash
+# pnpm (recommended)
+pnpm add @restorino/sdk
+
+# npm
+npm install @restorino/sdk
+
+# yarn
+yarn add @restorino/sdk
+
+# bun
+bun add @restorino/sdk
+```
+
+---
+
+## 🏛️ Architecture & Modules
+
+The SDK is organized into intuitive, strongly-typed namespaces accessible from the root client instance:
+
+| Module | Namespace | Purpose | Auth Required |
+| :--- | :--- | :--- | :---: |
+| **Vitrine & Menus** | `client.vitrine.*` | Restaurant discovery, menus, categories, dishes, testimonials, hours | ❌ Public |
+| **Orders** | `client.orders.*` | Online orders (Delivery, Takeaway, Dine-in), delivery fee estimates, table reservations | ❌ Public |
+| **Delivery & Tracking**| `client.delivery.*` | Real-time driver GPS tracking, ETA calculation, delivery milestone events | ❌ Public |
+| **QR Code Dine-In** | `client.tables.*` | QR table scan, on-site ordering, waiter call triggers | ❌ Public |
+| **Customer Auth** | `client.auth.*` | Registration, login, Google Sign-In, password recovery, session handling | ❌ Public / 🔐 Session |
+| **Customer Portal** | `client.customer.*` | Order history, profile management, coupon validation, favorite items, reviews | 🔐 Customer Session |
+| **Loyalty & Rewards** | `client.loyalty.*` | Point balance, tier milestones, reward catalog redemption, Google review rewards | 🔐 Customer Session |
+| **AI Voice Assistant** | `client.liveAgent.*` | Real-time interactive culinary advisor via Gemini Live WebSocket audio | ❌ Public |
+
+---
+
+## 💻 Code Examples
+
+### 1. Initialize Client
+
 ```typescript
-import { RestorinoClient } from './restorino-sdk';
+import { RestorinoClient } from '@restorino/sdk';
 
-export const api = new RestorinoClient({
-  baseUrl: import.meta.env.VITE_RESTORINO_API_URL || 'http://localhost:8080',
-  restaurantId: import.meta.env.VITE_RESTAURANT_ID,
-  tenantId: import.meta.env.VITE_TENANT_ID,
-  // Authentification : cookies HttpOnly côté backend. `credentials: 'include'`
-  // est le défaut. L'origine du storefront doit être autorisée par le CORS du
-  // backend (ou servir l'API via votre propre proxy same-origin).
-  credentials: 'include',
-  storageType: 'memory',       // Aucun jeton n'est lisible en JS en mode cookies
-  autoRefreshToken: true,      // Renouvellement transparent sur expiration 401
-  retries: 2,                  // Retry automatique avec backoff exponentiel sur requêtes GET
-  retryDelayMs: 300,           // Délai initial de réessai
-  onTokenExpired: () => {
-    window.location.href = '/login?expired=true';
-  },
+export const restorino = new RestorinoClient({
+  baseUrl: process.env.NEXT_PUBLIC_RESTORINO_API_URL || 'https://api.restorino.com',
+  restaurantId: '1b9081bd-738a-4dbe-8089-0f3726741618',
+  tenantId: '58853078-566b-4729-b9a5-1290f93fccec',
+  credentials: 'include',     // Uses secure HttpOnly cookies by default
+  autoRefreshToken: true,    // Transparently refreshes access tokens on 401
+  retries: 2,                // Retries transient 503 or network errors
 });
 ```
 
-> ⚠️ **Périmètre storefront uniquement.** Le SDK ne peut appeler que
-> `/api/public/**`, `/api/auth/customers/**`, `/api/customers/**`,
-> `/api/notifications/customers/**` et les lectures publiques de la vitrine.
-> Toute autre route (admin, POS, livreur, staff) lève
-> `OUT_OF_SCOPE_ENDPOINT` **avant** l'appel réseau. Aucune clé API n'est
-> supportée : le seul identifiant est le cookie client.
-
-### 🔒 Garanties de sécurité
-
-| Contrôle | Comportement par défaut |
-|---|---|
-| Jetons | Cookies `HttpOnly` gérés par le backend ; **aucun jeton écrit dans `localStorage`** (`storageType` par défaut : `memory`) |
-| `baseUrl` | Seuls `https://…` et les chemins `/…` sont acceptés ; `javascript:`, `data:`, `file:`, `//evil.com` et `user:pass@host` sont rejetés |
-| CSRF | Double-submit automatique : cookie `XSRF-TOKEN` → en-tête `X-XSRF-TOKEN` sur les mutations |
-| Périmètre | Allowlist storefront dans le transport : admin/POS/livreur/staff refusés **avant** tout appel réseau (`OUT_OF_SCOPE_ENDPOINT`) |
-| Réponses | Une réponse 2xx non-JSON est rejetée (`INVALID_RESPONSE`) au lieu d'être typée en succès |
-| Erreurs | Corps d'erreur borné (8 Ko) et champs de pollution de prototype filtrés |
-| Déconnexion | Annule un rafraîchissement en vol : une session fermée ne peut pas être ressuscitée |
-| Polling | Borné en durée (30 min) et en erreurs consécutives (5) |
-
-### 3. Prompt Lovable prêt à l'emploi (1-Shot)
-Deux formats de prompt sont disponibles et prêts à copier-coller directement :
-- 👉 **Fichier texte brut 1-Shot** : [`LOVABLE_1SHOT_PROMPT.txt`](./LOVABLE_1SHOT_PROMPT.txt) ou [`prompt.txt`](./prompt.txt)
-- 👉 **Guide Markdown** : [`LOVABLE_PROMPT.md`](./LOVABLE_PROMPT.md)
-
-Collez ce prompt directement dans Lovable / v0 / Bolt pour générer toute l'application :
-- Vitrine restaurant & menu interactif (catégories, suppléments, allergènes)
-- Panier & tunnel de commande en 3 modes (Livraison, À emporter, À table QR Code)
-- Suivi de commande et livreur en direct (coordonnées GPS en temps réel)
-- Espace client (Historique, avis, parrainage, notifications)
-- Programme de fidélité (Points, paliers Bronze/Silver/Gold/Platinum, récompenses, avis Google)
-- Conseiller culinaire vocal interactif (Gemini Live WebSocket)
-
 ---
 
-##  Architecture des Modules
+### 2. Fetch Digital Menus & Categories
 
-| Module | Namespace | Description | Authentification requise ? |
-| :--- | :--- | :--- | :--- |
-| **Vitrine & Menus** | `api.vitrine.*` | Découverte resto, carte des menus, plats, catégories, horaires | ❌ Non (Public) |
-| **Commandes Publiques** | `api.orders.*` | Estimation livraison, réservation, suivi | ❌ Non (Public) |
-| **Suivi Livreur** | `api.delivery.*` | Suivi GPS et statut de livraison par numéro de tracking | ❌ Non (Public) |
-| **Commande à Table (QR)** | `api.tables.*` | Scan QR code de table pour commande sur place | ❌ Non (Public) |
-| **Agent Vocal & Chat (AI)** | `api.liveAgent.*` | Conseiller culinaire interactif en temps réel (Gemini Live) | ❌ Non (Public) |
-| **Auth Client** | `api.auth.*` | Inscription, connexion, mot de passe oublié, vérification email | ❌ Non / 🔐 Oui |
-| **Espace Client** | `api.customer.*` | Profil, historique commandes, notation des plats, parrainage | 🔐 Cookie client (HttpOnly) |
-| **Fidélité** | `api.loyalty.*` | Points, paliers, catalogue récompenses, points avis Google | 🔐 Cookie client (HttpOnly) |
-
----
-
-## 💻 Exemples d'Utilisation
-
-### Charger le menu d'un restaurant
 ```typescript
-const menu = await api.vitrine.getMenu('pizza-palace');
-console.log(menu.restaurantName, menu.categories);
+// Fetch full menu by restaurant slug
+const menu = await restorino.vitrine.getMenu('le-bistro-gourmet');
+
+console.log(`Restaurant: ${menu.restaurantName}`);
+menu.categories.forEach((category) => {
+  console.log(`\n--- ${category.name} ---`);
+  category.products.forEach((product) => {
+    console.log(`${product.name} - ${product.price}€`);
+    if (product.allergens?.length) {
+      console.log(`  Allergens: ${product.allergens.join(', ')}`);
+    }
+  });
+});
 ```
 
-### Passer une commande en livraison
+---
+
+### 3. Online Food Ordering
+
+Supports **Delivery**, **Takeaway**, and **Dine-in (QR Code)**:
+
 ```typescript
-const order = await api.orders.placeOrder({
-  customerName: 'Sarah Connor',
+const order = await restorino.orders.placeOrder({
+  customerName: 'Alexandre Dumas',
   customerPhone: '+33612345678',
-  customerEmail: 'sarah@example.com',
+  customerEmail: 'alexandre@example.com',
   orderType: 'DELIVERY',
   paymentMethod: 'CARD_ONLINE',
   deliveryLocation: {
-    street: '12 Rue de la Paix',
+    street: '15 Boulevard Saint-Germain',
     city: 'Paris',
-    postalCode: '75002',
-    latitude: 48.868,
-    longitude: 2.331,
+    postalCode: '75005',
+    latitude: 48.8512,
+    longitude: 2.3518,
   },
   items: [
     {
-      productId: 'uuid-pizza-margherita',
-      productName: 'Pizza Margherita',
+      productId: 'prod-truffle-burger-id',
+      productName: 'Truffle Angus Burger',
       quantity: 2,
-      unitPrice: 12.50,
-      supplementIds: ['uuid-extra-mozza'],
+      unitPrice: 18.50,
+      supplementIds: ['supp-extra-cheddar-id'],
+      notes: 'No pickles please',
     },
   ],
 });
 
-console.log('Numéro de commande :', order.orderNumber);
+console.log(`Order confirmed! Tracking Code: ${order.orderNumber}`);
 ```
 
-### Connexion et consultation des points de fidélité
+---
+
+### 4. Customer Authentication & Profile
+
 ```typescript
-// Connexion classique (sauvegarde automatiquement le token JWT)
-await api.auth.login({
-  email: 'client@example.com',
-  password: 'MonMotDePasseSecurise123!',
+// Email & Password login
+await restorino.auth.login({
+  email: 'customer@example.com',
+  password: 'SecurePassword123!',
 });
 
-// Ou connexion via Google Sign-In
-await api.auth.loginWithGoogle({
-  googleToken: 'google-id-token-xyz',
+// Or 1-Click Google Sign-In
+await restorino.auth.loginWithGoogle({
+  googleToken: 'eyJhbGciOiJSUzI1NiIsImtpZCI6...',
 });
 
-// Récupérer le solde de points et le palier
-const loyalty = await api.loyalty.getStatus();
-console.log(`Palier : ${loyalty.tier}, Points : ${loyalty.availablePoints}`);
+// Fetch customer order history
+const orders = await restorino.customer.getOrderHistory();
+console.log(`Total orders placed: ${orders.length}`);
 ```
 
-### Validation d'un code promo sur le panier
+---
+
+### 5. Loyalty Rewards & Points
+
 ```typescript
-const promo = await api.customer.validatePromoCode('BIENVENUE10', 45.0);
-if (promo.valid) {
-  console.log(`Réduction : -${promo.discount}€ (${promo.message})`);
+// Check loyalty status and rewards
+const status = await restorino.loyalty.getStatus();
+
+console.log(`Current Tier: ${status.tier}`); // 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM'
+console.log(`Available Points: ${status.availablePoints}`);
+
+// Redeem a reward
+if (status.availablePoints >= 100) {
+  await restorino.loyalty.redeemReward('reward-free-dessert-id');
+  console.log('Reward successfully redeemed!');
 }
 ```
 
-### Agent Vocal & Conseiller Culinaire Interactif (Gemini Live)
+---
+
+### 6. Real-Time Courier Tracking
+
 ```typescript
-const session = await api.liveAgent.connect({
-  restaurantSlug: 'pizza-palace',
+// Track courier GPS coordinates and delivery status
+const tracking = await restorino.delivery.track('TRK-987654');
+
+console.log(`Status: ${tracking.status}`); // 'PENDING' | 'PREPARING' | 'IN_TRANSIT' | 'DELIVERED'
+console.log(`Courier Coordinates: ${tracking.driverLocation.latitude}, ${tracking.driverLocation.longitude}`);
+console.log(`Estimated Arrival: ${tracking.estimatedDeliveryMinutes} mins`);
+```
+
+---
+
+### 7. AI Live Culinary Assistant (Gemini Voice & Chat)
+
+Connect a real-time conversational AI sommelier and voice waiter directly to your frontend:
+
+```typescript
+const liveSession = await restorino.liveAgent.connect({
+  restaurantSlug: 'le-bistro-gourmet',
   onTranscript: (role, text) => {
-    console.log(`${role === 'user' ? 'Client' : 'Conseiller'}: ${text}`);
+    console.log(`${role === 'user' ? 'Guest' : 'Chef AI'}: ${text}`);
   },
-  onAudio: (audioPcmChunk) => {
-    // Lecture audio du flux de réponse (PCM 16kHz)
-    playPcmAudio(audioPcmChunk);
+  onAudio: (pcmAudioChunk) => {
+    // Stream output audio to web AudioContext (16kHz PCM)
+    audioPlayer.feed(pcmAudioChunk);
   },
   onClientAction: (action) => {
+    // AI autonomously adds recommended items to the cart
     if (action.action === 'ACTION_CART_ADD' || action.action === 'ADD_TO_CART') {
-      console.log('Plat ajouté au panier vocalement :', action.payload);
+      cartStore.addItem(action.payload);
     }
   },
-  onStatusChange: (status) => console.log('État agent :', status),
-  onInterrupted: () => stopAudioPlayback(),
 });
 
-// Envoi d'une question ou flux micro
-session.sendText('Quels sont vos plats sans gluten ?');
-// session.sendAudio(microphonePcmChunk);
+// Ask natural questions
+liveSession.sendText("What vegetarian wine pairings do you recommend for tonight's dinner?");
 ```
 
 ---
 
-## 🔨 Commandes de Build & Test
+## ⚡ Zero-Dependency Standalone Bundle
+
+Building with visual AI web builders (**Lovable.dev**, **v0.dev**, **Bolt.new**)? 
+
+You do **not** even need `npm install`. Use our bundled standalone file:
+👉 **[`dist-bundle/restorino-sdk.ts`](./dist-bundle/restorino-sdk.ts)**
+
+Copy this single file into your project at `src/lib/restorino-sdk.ts` and import directly:
+```typescript
+import { RestorinoClient } from './lib/restorino-sdk';
+```
+
+- Complete 1-Shot Lovable Prompt: [`LOVABLE_1SHOT_PROMPT.txt`](./LOVABLE_1SHOT_PROMPT.txt)
+- LLM API Specification: [`llms.txt`](./llms.txt)
+
+---
+
+## 🔒 Security & Scope Boundary
+
+Restorino SDK enforces strict runtime sandboxing to prevent security vulnerabilities:
+
+1. **HttpOnly Cookie Architecture**: Tokens are stored in browser `HttpOnly; Secure; SameSite=Strict` cookies by default, preventing XSS token theft.
+2. **Double-Submit CSRF Protection**: Automatically converts `XSRF-TOKEN` cookie into `X-XSRF-TOKEN` request header for mutating calls.
+3. **SSRF & Path Traversal Prevention**: Sanitizes all query parameters and validates `baseUrl` against dangerous schemes (`javascript:`, `data:`, `file:`, `//evil.com`).
+4. **Strict Scope Allowlist**: Administrative, Cashier (POS), and Staff endpoints are blocked client-side (`OUT_OF_SCOPE_ENDPOINT`) to safeguard platform isolation.
+
+---
+
+## 🛠️ TypeScript Support
+
+Written in strict TypeScript 5.6. All request and response structures are fully exported:
+
+```typescript
+import type {
+  MenuItem,
+  Category,
+  CreateOrderRequest,
+  OrderResponse,
+  LoyaltyStatus,
+  DeliveryTrackingResponse,
+  LiveAgentAction,
+} from '@restorino/sdk';
+```
+
+---
+
+## 🧪 Contributing & Development
 
 ```bash
-# Compilation TypeScript (double build : CJS dans dist/, ESM dans dist/esm/)
-npm run build
+# Clone the repository
+git clone https://github.com/restorino/restorino-sdk-ts.git
+cd restorino-sdk-ts
 
-# Type-check des sources et de l'exemple de référence
-npm run typecheck && npm run typecheck:examples
+# Install dependencies
+pnpm install
 
-# Suite complète : client + contrat backend + sécurité + docs + packaging
-npm test
+# Run TypeScript typechecks
+pnpm run typecheck
 
-# Rafraîchir le snapshot de contrat depuis l'OpenAPI du backend
-npm run contract:snapshot -- --url http://localhost:8080/v3/api-docs
+# Run test suite (unit, contract, security, packaging)
+pnpm test
 
-# Régénération du bundle standalone mono-fichier (Lovable.dev / v0)
-npm run bundle:single
-
-# Vérification du paquet avant publication
-npm pack --dry-run
+# Build CJS, ESM and Single-file bundles
+pnpm run build
 ```
-
-### Implémentation de référence
-
-[`examples/vanilla/`](./examples/vanilla) contient un tunnel de commande
-complet et typé (menu → panier → checkout → suivi) : `npm run typecheck:examples`
-vérifie qu'il compile, et il constitue le squelette à copier pour une app générée.
 
 ---
 
-## 📄 Licence
+## 📄 License
 
-MIT © [Restorino](https://restorino.com)
+Distributed under the **MIT License**. See [`LICENSE`](./LICENSE) for more information.
+
+Developed and maintained by **[Restorino](https://restorino.com)**.
