@@ -71,7 +71,7 @@
     "gemini-live",
     "ai-agent"
   ],
-  "author": "Restorino",
+  "author": "Restorino Team <contact@restorino.com>",
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.6.3"

@@ -324,4 +324,5 @@ pnpm run build
 
 Distributed under the **MIT License**. See [`LICENSE`](./LICENSE) for more information.
 
-Developed and maintained by **[Restorino](https://restorino.com)**.
+Maintained with ❤️ by the **[Restorino Team](https://restorino.com)**.
+
