@@ -19,12 +19,16 @@ jobs:
         with:
           # Pinned: Node 20 is EOL and unpatched for CVE-2026-111497 (Brotli).
           node-version: '24.22.3'
-          cache: npm
 
-      - run: npm ci
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Type-check sources
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Type-check reference example
         run: npm run typecheck:examples
@@ -33,7 +37,7 @@ jobs:
         run: npm test
 
       - name: No runtime dependency vulnerabilities
-        run: npm audit --omit=dev
+        run: pnpm audit --prod
 
   contract-drift:
     name: Backend contract drift
