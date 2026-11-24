@@ -1,0 +1,45 @@
+name: 💡 Feature Request
+description: Suggest a new feature, module, or enhancement for @restorino/sdk
+title: "[Feature]: "
+labels: ["enhancement", "proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea to improve the Restorino TypeScript SDK? We'd love to hear it!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem or limitation? (e.g. "I'm always frustrated when...")
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution / API Design
+      description: Describe what you would like the SDK to do and what the TypeScript API might look like.
+      render: typescript
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions Considered
+      description: Have you considered any alternative solutions or workarounds?
+  - type: dropdown
+    id: module
+    attributes:
+      label: Relevant SDK Module
+      options:
+        - Vitrine & Menus (`api.vitrine`)
+        - Orders & Checkout (`api.orders`)
+        - Delivery Tracking (`api.delivery`)
+        - QR Dine-In (`api.tables`)
+        - Customer Auth (`api.auth`)
+        - Customer Portal (`api.customer`)
+        - Loyalty & Rewards (`api.loyalty`)
+        - Live AI Assistant (`api.liveAgent`)
+        - HTTP Client & Core Transport
+        - Standalone Bundle (Lovable.dev / v0)
+        - Other
