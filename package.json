@@ -74,6 +74,6 @@
   "author": "Restorino Team <contact@restorino.com>",
   "license": "MIT",
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "typescript": "^7.0.2"
   }
 }
