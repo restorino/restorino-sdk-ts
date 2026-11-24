@@ -1,5 +1,6 @@
 # Restorino TypeScript SDK (`@restorino/sdk`)
 
+[![SDK CI](https://github.com/restorino/restorino-sdk-ts/actions/workflows/ci.yml/badge.svg)](https://github.com/restorino/restorino-sdk-ts/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@restorino/sdk.svg?style=flat-square&color=0070F3)](https://www.npmjs.com/package/@restorino/sdk)
 [![npm downloads](https://img.shields.io/npm/dm/@restorino/sdk.svg?style=flat-square&color=blue)](https://www.npmjs.com/package/@restorino/sdk)
 [![license](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](./LICENSE)
